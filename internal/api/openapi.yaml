@@ -1,0 +1,254 @@
+openapi: 3.0.3
+info:
+  title: GophProfile API
+  description: >
+    Микросервис управления аватарками пользователей. Пользователь загружает
+    аватарку один раз, сторонние платформы запрашивают её по идентификатору.
+
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: avatars
+    description: Операции с аватарками
+  - name: users
+    description: Операции с аватарками пользователей
+  - name: system
+    description: Служебные эндпоинты
+paths:
+  /api/v1/avatars:
+    post:
+      tags: [avatars]
+      summary: Загрузка аватарки
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Изображение (jpeg, png, webp), до 10 МБ
+      parameters:
+        - in: header
+          name: X-User-ID
+          required: true
+          schema: { type: string }
+          description: Идентификатор пользователя
+      responses:
+        '201':
+          description: Аватарка загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvatarResponse' }
+        '400':
+          description: Некорректный формат или отсутствует файл
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: Файл больше 10 МБ
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Error' }
+                  - type: object
+                    properties:
+                      max_size: { type: integer }
+  /api/v1/avatars/{avatarID}:
+    get:
+      tags: [avatars]
+      summary: Получение файла аватарки
+      parameters:
+        - { $ref: '#/components/parameters/AvatarID' }
+        - in: query
+          name: size
+          schema: { type: string, enum: [original, 100x100, 300x300] }
+          description: >
+            Размер отдаваемого изображения: original (по умолчанию) — файл в
+            исходном формате; 100x100 и 300x300 — миниатюры JPEG, созданные
+            воркером. Пока миниатюра не готова (или её нет) — 404.
+        - in: query
+          name: format
+          schema: { type: string, enum: [jpeg, png, webp] }
+          description: >
+            Желаемый формат для оригинала: должен совпадать с форматом
+            загруженного файла, иначе 404. Миниатюры всегда JPEG
+            (format=jpeg или параметр не указывается).
+      responses:
+        '200':
+          description: Файл изображения
+          headers:
+            Cache-Control: { schema: { type: string } }
+            ETag: { schema: { type: string } }
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        '304': { description: Не изменился (If-None-Match) }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [avatars]
+      summary: >
+        Удаление аватарки: мягкое удаление в БД сразу, файлы из S3
+        удаляет воркер асинхронно по событию AvatarDeleteEvent.
+      parameters:
+        - { $ref: '#/components/parameters/AvatarID' }
+        - in: header
+          name: X-User-ID
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Удалена }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/avatars/{avatarID}/metadata:
+    get:
+      tags: [avatars]
+      summary: Метаданные аватарки
+      parameters:
+        - { $ref: '#/components/parameters/AvatarID' }
+      responses:
+        '200':
+          description: Метаданные
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Metadata' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/users/{userID}/avatar:
+    get:
+      tags: [users]
+      summary: Текущая аватарка пользователя
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+      responses:
+        '200':
+          description: Файл изображения
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [users]
+      summary: Удаление текущей аватарки пользователя
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+        - in: header
+          name: X-User-ID
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Удалена }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/users/{userID}/avatars:
+    get:
+      tags: [users]
+      summary: Список аватарок пользователя
+      parameters:
+        - { $ref: '#/components/parameters/UserID' }
+      responses:
+        '200':
+          description: Список аватарок
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AvatarResponse' }
+  /health:
+    get:
+      tags: [system]
+      summary: Проверка работоспособности (БД, S3, брокер)
+      responses:
+        '200':
+          description: Все компоненты доступны
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Часть компонентов недоступна
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+components:
+  parameters:
+    AvatarID:
+      in: path
+      name: avatarID
+      required: true
+      schema: { type: string, format: uuid }
+      description: Идентификатор аватарки
+    UserID:
+      in: path
+      name: userID
+      required: true
+      schema: { type: string }
+      description: Идентификатор пользователя
+  responses:
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Доступ запрещён
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    AvatarResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        url: { type: string }
+        status:
+          type: string
+          enum: [pending, processing, ready, failed]
+        created_at: { type: string, format: date-time }
+    Metadata:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        file_name: { type: string }
+        mime_type: { type: string }
+        size: { type: integer }
+        dimensions:
+          type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+        status:
+          type: string
+          enum: [pending, processing, ready, failed]
+          description: Статус асинхронной обработки
+        thumbnails:
+          type: array
+          items:
+            type: object
+            properties:
+              size: { type: string }
+              url: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        details: { type: string }
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        components:
+          type: object
+          additionalProperties: { type: string }
