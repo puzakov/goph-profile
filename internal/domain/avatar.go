@@ -7,8 +7,6 @@ import (
 )
 
 // Статусы обработки аватарки (processing_status в БД).
-// На этапе 1 обработки ещё нет: после загрузки аватарка сразу готова (ready).
-// На этапе 2 воркер будет переводить её pending -> processing -> ready.
 const (
 	StatusPending    = "pending"    // загружена, ожидает обработки
 	StatusProcessing = "processing" // обрабатывается воркером
@@ -32,7 +30,7 @@ var SupportedMimeTypes = map[string]struct{}{
 	"image/webp": {},
 }
 
-// Thumbnail — миниатюра аватарки (появляется на этапе 2).
+// Thumbnail — миниатюра аватарки
 type Thumbnail struct {
 	Size string `json:"size"` // например "100x100"
 	Key  string `json:"key"`  // ключ объекта в S3
