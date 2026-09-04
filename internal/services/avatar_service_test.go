@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -376,6 +377,20 @@ func TestGetAvatar_FormatConversionNotSupportedForThumbnail(t *testing.T) {
 	_, _, _, err := svc.GetAvatar(context.Background(), "a1", "100x100", "webp")
 	require.ErrorIs(t, err, domain.ErrThumbnailNotFound,
 		"миниатюры всегда JPEG, конвертация не поддерживается")
+}
+
+func TestMapStorageError_WrappedSentinel(t *testing.T) {
+	// errors.Is должен проходить по цепочке обёрток %w.
+	wrapped := fmt.Errorf("get object: %w", storage.ErrObjectNotFound)
+
+	require.ErrorIs(t, mapStorageError(wrapped), domain.ErrNotFound)
+}
+
+func TestMapStorageError_OtherErrorPassedThrough(t *testing.T) {
+	original := errors.New("connection refused")
+
+	require.ErrorIs(t, mapStorageError(original), original)
+	require.NotErrorIs(t, mapStorageError(original), domain.ErrNotFound)
 }
 
 func TestGetAvatar_NotFoundWhenObjectMissing(t *testing.T) {

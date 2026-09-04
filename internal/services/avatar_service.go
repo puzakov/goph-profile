@@ -4,6 +4,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -17,7 +18,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	// Регистрация декодеров форматов для image.DecodeConfig.
+	// Регистрация декодеров форматов изображений для image.DecodeConfig.
 	_ "golang.org/x/image/webp"
 
 	"goph-profile/internal/domain"
@@ -303,7 +304,7 @@ func decodeDimensions(buf []byte) (width, height int) {
 }
 
 func mapStorageError(err error) error {
-	if err == storage.ErrObjectNotFound {
+	if errors.Is(err, storage.ErrObjectNotFound) {
 		return domain.ErrNotFound
 	}
 	return err
