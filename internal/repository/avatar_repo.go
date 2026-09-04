@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -209,7 +210,10 @@ func scanAvatar(row pgx.Row) (*domain.Avatar, error) {
 		return nil, fmt.Errorf("scan avatar: %w", err)
 	}
 	if len(thumbnails) > 0 {
-		_ = json.Unmarshal(thumbnails, &a.Thumbnails)
+		if err := json.Unmarshal(thumbnails, &a.Thumbnails); err != nil {
+			slog.Error("unmarshal thumbnail_s3_keys failed",
+				"avatar_id", a.ID, "error", err)
+		}
 	}
 	return &a, nil
 }

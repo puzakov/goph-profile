@@ -157,6 +157,28 @@ func TestMarkEventProcessed_DuplicateEvent(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetByID_CorruptedThumbnailsJSON(t *testing.T) {
+	repo, mock := newMockRepo(t)
+	now := time.Now()
+
+	// Битый JSON в thumbnail_s3_keys не должен ронять чтение:
+	// аватарка вернётся с пустым списком миниатюр (с логом об ошибке).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
+		WithArgs("a1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "file_name", "mime_type",
+			"size_bytes", "width", "height", "s3_key", "thumbnail_s3_keys",
+			"processing_status", "created_at", "updated_at"}).
+			AddRow("a1", "user-1", "photo.jpg", "image/jpeg", int64(100), 0, 0,
+				"avatars/a1/original.jpg", []byte(`{"size": broken`),
+				domain.StatusReady, now, now))
+
+	avatar, err := repo.GetByID(context.Background(), "a1")
+	require.NoError(t, err)
+	require.Equal(t, "a1", avatar.ID)
+	require.Empty(t, avatar.Thumbnails)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestGetCurrentByUser_Found(t *testing.T) {
 	repo, mock := newMockRepo(t)
 	now := time.Now()
