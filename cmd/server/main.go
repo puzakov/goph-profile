@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"goph-profile/internal/config"
+	"goph-profile/internal/db/migrations"
 	"goph-profile/internal/handlers"
 	"goph-profile/internal/messaging"
 	"goph-profile/internal/repository"
@@ -48,7 +50,9 @@ func run(log *slog.Logger, cfg *config.Config) error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
-	if err := repository.Migrate(ctx, pool, cfg.MigrationsDir); err != nil {
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = sqlDB.Close() }()
+	if err := migrations.Up(sqlDB); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 

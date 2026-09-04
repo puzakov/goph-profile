@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
@@ -29,6 +30,7 @@ import (
 	rmq "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"goph-profile/internal/db/migrations"
 	"goph-profile/internal/handlers"
 	"goph-profile/internal/messaging"
 	"goph-profile/internal/repository"
@@ -81,7 +83,9 @@ func (s *FlowSuite) SetupSuite() {
 	// PostgreSQL может перезапускать процесс сразу после initdb —
 	// ждём устойчивого соединения, прежде чем применять миграции.
 	require.NoError(t, waitForPostgres(ctx, pool, 60*time.Second))
-	require.NoError(t, repository.Migrate(ctx, pool, "../../migrations"))
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = sqlDB.Close() }()
+	require.NoError(t, migrations.Up(sqlDB))
 
 	// --- RabbitMQ ---
 	rmqC, err := rmq.Run(ctx, rabbitImage)

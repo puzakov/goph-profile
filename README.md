@@ -7,7 +7,7 @@
 ## Стек
 
 - **Go 1.27**, HTTP-роутер **chi**
-- **PostgreSQL 16** — метаданные аватарок (миграции в `migrations/`)
+- **PostgreSQL 16** — метаданные аватарок; миграции через **goose** (up/down, встроены в бинарник)
 - **MinIO** (S3-совместимо) — файлы изображений
 - **RabbitMQ** — события обработки, ретраи с экспоненциальным backoff через DLX
 - **Docker Compose** — локальный стенд
@@ -88,7 +88,13 @@ make test-cover        # тесты + покрытие (требование: >5
 make test-integration  # интеграционные тесты (testcontainers, нужен Docker)
 make lint              # golangci-lint
 make compose-up        # локальный стенд
+make migrate-up        # применить миграции через goose CLI (вне сервиса)
+make migrate-down      # откатить последнюю миграцию
+make migrate-status    # статус миграций
 ```
+
+Миграции применяются автоматически при старте server и worker. Для ручного
+управления используйте goose CLI (`make migrate-up/down/status`, DSN из `DATABASE_URL`).
 
 ## Структура проекта
 
@@ -99,15 +105,16 @@ make compose-up        # локальный стенд
 ├── internal/
 │   ├── api/           # OpenAPI-спецификация
 │   ├── config/        # конфигурация из переменных окружения
+│   ├── db/
+│   │   └── migrations/ # SQL-миграции goose (go:embed в бинарник)
 │   ├── domain/        # сущности, статусы, события брокера
 │   ├── handlers/      # HTTP-обработчики, роутер, middleware
 │   ├── imaging/       # утилиты работы с изображениями (crop/resize/JPEG)
 │   ├── messaging/     # RabbitMQ: publisher, топология, retry-политика
-│   ├── repository/    # PostgreSQL: метаданные, миграции, event_dedup
+│   ├── repository/    # PostgreSQL: метаданные, event_dedup
 │   ├── services/      # бизнес-логика
 │   ├── storage/       # S3-совместимое хранилище (MinIO)
 │   └── worker/        # консьюмеры событий, конвейер обработки
-├── migrations/        # SQL-миграции
 ├── docker/            # Dockerfile, docker-compose
 ├── tests/integration/ # интеграционные тесты (testcontainers-go)
 └── web/static/        # фронтенд (форма загрузки)

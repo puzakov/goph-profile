@@ -24,6 +24,22 @@ lint:
 test-integration:
 	go test -tags=integration -v -timeout 15m ./tests/integration/
 
+# Применение миграций через goose CLI (вне сервиса).
+# Требуется запущенная БД; DSN берётся из DATABASE_URL или .env.
+migrate-up:
+	go run github.com/pressly/goose/v3/cmd/goose@latest \
+		-dir internal/db/migrations postgres "$(DATABASE_URL)" up
+
+# Откат последней миграции.
+migrate-down:
+	go run github.com/pressly/goose/v3/cmd/goose@latest \
+		-dir internal/db/migrations postgres "$(DATABASE_URL)" down
+
+# Статус применённых миграций.
+migrate-status:
+	go run github.com/pressly/goose/v3/cmd/goose@latest \
+		-dir internal/db/migrations postgres "$(DATABASE_URL)" status
+
 # Локальный стенд: PostgreSQL + MinIO + RabbitMQ + server + worker.
 compose-up:
 	docker compose -f docker/docker-compose.yml up -d --build

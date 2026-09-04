@@ -5,7 +5,6 @@ import "testing"
 func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	t.Setenv("DATABASE_URL", "")
-	t.Setenv("MIGRATIONS_DIR", "")
 	t.Setenv("STATIC_DIR", "")
 	t.Setenv("RABBITMQ_URL", "")
 	t.Setenv("S3_ENDPOINT", "")
@@ -22,9 +21,6 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.DatabaseURL == "" {
 		t.Error("DatabaseURL should have a default")
-	}
-	if cfg.MigrationsDir != "./migrations" {
-		t.Errorf("MigrationsDir = %q, want ./migrations", cfg.MigrationsDir)
 	}
 	if cfg.StaticDir != "./web/static" {
 		t.Errorf("StaticDir = %q, want ./web/static", cfg.StaticDir)

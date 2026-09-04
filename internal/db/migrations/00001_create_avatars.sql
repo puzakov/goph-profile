@@ -1,5 +1,5 @@
--- Аватарки пользователей: метаданные в БД, файлы в S3.
-
+-- +goose Up
+-- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS avatars (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id VARCHAR(255) NOT NULL,
@@ -19,3 +19,9 @@ CREATE TABLE IF NOT EXISTS avatars (
 
 CREATE INDEX IF NOT EXISTS idx_avatars_user_id ON avatars (user_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_avatars_status ON avatars (upload_status, processing_status);
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE IF EXISTS avatars;
+-- +goose StatementEnd

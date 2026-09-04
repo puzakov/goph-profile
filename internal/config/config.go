@@ -5,12 +5,11 @@ import "os"
 
 // Config — настройки сервиса.
 type Config struct {
-	HTTPAddr      string // адрес HTTP-сервера, например ":8080"
-	DatabaseURL   string // DSN подключения к PostgreSQL
-	MigrationsDir string // каталог с SQL-миграциями
-	StaticDir     string // каталог со статическими файлами веб-интерфейса
-	RabbitMQURL   string // адрес брокера сообщений RabbitMQ
-	Storage       StorageConfig
+	HTTPAddr    string // адрес HTTP-сервера, например ":8080"
+	DatabaseURL string // DSN подключения к PostgreSQL
+	StaticDir   string // каталог со статическими файлами веб-интерфейса
+	RabbitMQURL string // адрес брокера сообщений RabbitMQ
+	Storage     StorageConfig
 }
 
 // StorageConfig — настройки S3-совместимого хранилища.
@@ -26,11 +25,10 @@ type StorageConfig struct {
 // Load читает конфигурацию из окружения, подставляя значения по умолчанию.
 func Load() *Config {
 	return &Config{
-		HTTPAddr:      getenv("HTTP_ADDR", ":8080"),
-		DatabaseURL:   getenv("DATABASE_URL", "postgres://goph:goph@localhost:5432/goph?sslmode=disable"),
-		MigrationsDir: getenv("MIGRATIONS_DIR", "./migrations"),
-		StaticDir:     getenv("STATIC_DIR", "./web/static"),
-		RabbitMQURL:   getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		HTTPAddr:    getenv("HTTP_ADDR", ":8080"),
+		DatabaseURL: getenv("DATABASE_URL", "postgres://goph:goph@localhost:5432/goph?sslmode=disable"),
+		StaticDir:   getenv("STATIC_DIR", "./web/static"),
+		RabbitMQURL: getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		Storage: StorageConfig{
 			Endpoint:  getenv("S3_ENDPOINT", "localhost:9000"),
 			AccessKey: getenv("S3_ACCESS_KEY", "minioadmin"),
