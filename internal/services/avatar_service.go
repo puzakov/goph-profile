@@ -14,12 +14,11 @@ import (
 
 	"github.com/google/uuid"
 
+	// Регистрация декодеров форматов изображений для image.DecodeConfig.
+	_ "golang.org/x/image/webp"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-
-	// Регистрация декодеров форматов изображений для image.DecodeConfig.
-	_ "golang.org/x/image/webp"
 
 	"goph-profile/internal/domain"
 	"goph-profile/internal/messaging"

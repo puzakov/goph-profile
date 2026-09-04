@@ -1,76 +1,106 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"testing"
 
-func TestLoad_Defaults(t *testing.T) {
-	t.Setenv("HTTP_ADDR", "")
-	t.Setenv("DATABASE_URL", "")
-	t.Setenv("STATIC_DIR", "")
-	t.Setenv("RABBITMQ_URL", "")
-	t.Setenv("S3_ENDPOINT", "")
-	t.Setenv("S3_ACCESS_KEY", "")
-	t.Setenv("S3_SECRET_KEY", "")
-	t.Setenv("S3_BUCKET", "")
-	t.Setenv("S3_REGION", "")
-	t.Setenv("S3_USE_SSL", "")
+	"github.com/stretchr/testify/require"
+)
 
-	cfg := Load()
-
-	if cfg.HTTPAddr != ":8080" {
-		t.Errorf("HTTPAddr = %q, want :8080", cfg.HTTPAddr)
-	}
-	if cfg.DatabaseURL == "" {
-		t.Error("DatabaseURL should have a default")
-	}
-	if cfg.StaticDir != "./web/static" {
-		t.Errorf("StaticDir = %q, want ./web/static", cfg.StaticDir)
-	}
-	if cfg.RabbitMQURL == "" {
-		t.Error("RabbitMQURL should have a default")
-	}
-	if cfg.Storage.Bucket != "avatars" {
-		t.Errorf("Bucket = %q, want avatars", cfg.Storage.Bucket)
-	}
-	if cfg.Storage.UseSSL {
-		t.Error("UseSSL = true, want false by default")
+// unset удаляет переменные окружения, чтобы проверить дефолтные значения.
+func unset(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		require.NoError(t, os.Unsetenv(k))
 	}
 }
 
-func TestLoad_FromEnv(t *testing.T) {
-	t.Setenv("HTTP_ADDR", ":9090")
+// setRequired заполняет обязательные переменные тестовыми значениями.
+func setRequired(t *testing.T) {
+	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://u:p@h/db")
-	t.Setenv("RABBITMQ_URL", "amqp://user:pass@rabbit:5672/vhost")
-	t.Setenv("S3_ENDPOINT", "minio:9000")
+	t.Setenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+	t.Setenv("S3_ACCESS_KEY", "test-access-key")
+	t.Setenv("S3_SECRET_KEY", "test-secret-key")
+}
+
+func TestLoad_MissingRequiredFails(t *testing.T) {
+	for _, key := range []string{"DATABASE_URL", "RABBITMQ_URL", "S3_ACCESS_KEY", "S3_SECRET_KEY"} {
+		t.Setenv(key, "")
+	}
+
+	cfg, err := Load()
+
+	require.Nil(t, cfg)
+	require.Error(t, err)
+	// Понятное сообщение перечисляет все недостающие переменные.
+	for _, key := range []string{"DATABASE_URL", "RABBITMQ_URL", "S3_ACCESS_KEY", "S3_SECRET_KEY"} {
+		require.Contains(t, err.Error(), key)
+	}
+}
+
+func TestLoad_PartialMissingListsOnlyMissing(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("RABBITMQ_URL", "")
 	t.Setenv("S3_ACCESS_KEY", "ak")
 	t.Setenv("S3_SECRET_KEY", "sk")
+
+	_, err := Load()
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "DATABASE_URL")
+	require.Contains(t, err.Error(), "RABBITMQ_URL")
+	require.NotContains(t, err.Error(), "S3_ACCESS_KEY")
+	require.NotContains(t, err.Error(), "S3_SECRET_KEY")
+}
+
+func TestLoad_SuccessWithDefaults(t *testing.T) {
+	setRequired(t)
+	unset(t, "HTTP_ADDR", "STATIC_DIR", "S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_USE_SSL")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	// Безопасные дефолты для несекретных значений.
+	require.Equal(t, ":8080", cfg.HTTPAddr)
+	require.Equal(t, "./web/static", cfg.StaticDir)
+	require.Equal(t, "localhost:9000", cfg.Storage.Endpoint)
+	require.Equal(t, "avatars", cfg.Storage.Bucket)
+	require.Equal(t, "us-east-1", cfg.Storage.Region)
+	require.False(t, cfg.Storage.UseSSL)
+}
+
+func TestLoad_ExplicitEmptyKeptEmpty(t *testing.T) {
+	setRequired(t)
+	// Переменная объявлена, но пустая: это явное значение, а не «не задана» —
+	// дефолт подставляться не должен.
+	t.Setenv("HTTP_ADDR", "")
+	t.Setenv("STATIC_DIR", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "", cfg.HTTPAddr)
+	require.Equal(t, "", cfg.StaticDir)
+}
+
+func TestLoad_FromEnv(t *testing.T) {
+	setRequired(t)
+	t.Setenv("HTTP_ADDR", ":9090")
+	t.Setenv("S3_ENDPOINT", "minio:9000")
 	t.Setenv("S3_BUCKET", "photos")
 	t.Setenv("S3_REGION", "eu-west-1")
 	t.Setenv("S3_USE_SSL", "true")
 
-	cfg := Load()
+	cfg, err := Load()
+	require.NoError(t, err)
 
-	if cfg.HTTPAddr != ":9090" {
-		t.Errorf("HTTPAddr = %q, want :9090", cfg.HTTPAddr)
-	}
-	if cfg.DatabaseURL != "postgres://u:p@h/db" {
-		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
-	}
-	if cfg.RabbitMQURL != "amqp://user:pass@rabbit:5672/vhost" {
-		t.Errorf("RabbitMQURL = %q", cfg.RabbitMQURL)
-	}
-	if cfg.Storage.Endpoint != "minio:9000" {
-		t.Errorf("Endpoint = %q, want minio:9000", cfg.Storage.Endpoint)
-	}
-	if cfg.Storage.AccessKey != "ak" || cfg.Storage.SecretKey != "sk" {
-		t.Errorf("credentials = %q/%q, want ak/sk", cfg.Storage.AccessKey, cfg.Storage.SecretKey)
-	}
-	if cfg.Storage.Bucket != "photos" {
-		t.Errorf("Bucket = %q, want photos", cfg.Storage.Bucket)
-	}
-	if cfg.Storage.Region != "eu-west-1" {
-		t.Errorf("Region = %q, want eu-west-1", cfg.Storage.Region)
-	}
-	if !cfg.Storage.UseSSL {
-		t.Error("UseSSL = false, want true")
-	}
+	require.Equal(t, ":9090", cfg.HTTPAddr)
+	require.Equal(t, "postgres://u:p@h/db", cfg.DatabaseURL)
+	require.Equal(t, "amqp://guest:guest@localhost:5672/", cfg.RabbitMQURL)
+	require.Equal(t, "minio:9000", cfg.Storage.Endpoint)
+	require.Equal(t, "test-access-key", cfg.Storage.AccessKey)
+	require.Equal(t, "test-secret-key", cfg.Storage.SecretKey)
+	require.Equal(t, "photos", cfg.Storage.Bucket)
+	require.Equal(t, "eu-west-1", cfg.Storage.Region)
+	require.True(t, cfg.Storage.UseSSL)
 }

@@ -27,7 +27,12 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(log)
 
-	if err := run(log, config.Load()); err != nil {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+	if err := run(log, cfg); err != nil {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
