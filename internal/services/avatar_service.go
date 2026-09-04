@@ -13,11 +13,12 @@ import (
 
 	"github.com/google/uuid"
 
-	// Регистрация декодеров форматов для image.DecodeConfig.
-	_ "golang.org/x/image/webp"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+
+	// Регистрация декодеров форматов для image.DecodeConfig.
+	_ "golang.org/x/image/webp"
 
 	"goph-profile/internal/domain"
 	"goph-profile/internal/messaging"
@@ -250,19 +251,22 @@ func (s *AvatarService) publishDelete(ctx context.Context, avatar *domain.Avatar
 func (s *AvatarService) Health(ctx context.Context) map[string]string {
 	components := map[string]string{}
 	if err := s.repo.Ping(ctx); err != nil {
-		components["database"] = "error: " + err.Error()
+		s.log.Error("health check failed", "component", "database", "error", err)
+		components["database"] = "unavailable"
 	} else {
 		components["database"] = "ok"
 	}
 	if err := s.storage.Ping(ctx); err != nil {
-		components["storage"] = "error: " + err.Error()
+		s.log.Error("health check failed", "component", "storage", "error", err)
+		components["storage"] = "unavailable"
 	} else {
 		components["storage"] = "ok"
 	}
 	// Брокер — опциональный компонент: без publisher'a он не проверяется.
 	if p, ok := s.publisher.(interface{ Ping(context.Context) error }); ok {
 		if err := p.Ping(ctx); err != nil {
-			components["broker"] = "error: " + err.Error()
+			s.log.Error("health check failed", "component", "broker", "error", err)
+			components["broker"] = "unavailable"
 		} else {
 			components["broker"] = "ok"
 		}

@@ -291,8 +291,10 @@ func TestHealth_BrokerDown(t *testing.T) {
 	pub := &fakePublisher{pingErr: errors.New("connection refused")}
 	svc := newService(&fakeRepo{}, &fakeStorage{}, pub)
 
+	// Клиенту — только факт недоступности, без текста внутренней ошибки.
 	components := svc.Health(context.Background())
-	require.Contains(t, components["broker"], "connection refused")
+	require.Equal(t, "unavailable", components["broker"])
+	require.NotContains(t, components["broker"], "connection refused")
 }
 
 func TestHealth_WithoutPublisher(t *testing.T) {

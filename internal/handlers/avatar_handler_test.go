@@ -490,7 +490,7 @@ func TestHealth_AllOK(t *testing.T) {
 func TestHealth_Degraded(t *testing.T) {
 	h := newTestHandler(&fakeService{
 		healthFn: func(ctx context.Context) map[string]string {
-			return map[string]string{"database": "ok", "storage": "error: connection refused"}
+			return map[string]string{"database": "ok", "storage": "unavailable"}
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
