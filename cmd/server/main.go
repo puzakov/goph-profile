@@ -75,7 +75,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	}
 	defer func() { _ = publisher.Close() }()
 
-	svc := services.NewAvatarService(repository.NewAvatarRepository(pool), st, publisher, log)
+	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, log)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

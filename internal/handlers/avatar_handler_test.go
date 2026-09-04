@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,11 @@ func (f *fakeService) Health(ctx context.Context) map[string]string {
 	return f.healthFn(ctx)
 }
 
+// newTestHandler создаёт обработчик с логгером, пишущим в никуда.
+func newTestHandler(svc AvatarService) *AvatarHandler {
+	return NewAvatarHandler(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
 // testPNG — валидный PNG 1x1 (прозрачный).
 var testPNG = decodeBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
@@ -122,7 +128,7 @@ func extForContentType(ct string) string {
 }
 
 func TestUpload_MissingUserID(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{}}
+	h := newTestHandler(&fakeService{})
 	req := newUploadRequest(t, "", "image", testPNG, "image/png")
 	w := httptest.NewRecorder()
 
@@ -137,11 +143,11 @@ func TestUpload_MissingUserID(t *testing.T) {
 }
 
 func TestUpload_InvalidFormat(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		uploadFn: func(_ context.Context, userID, fileName string, data io.Reader) (*domain.Avatar, error) {
 			return nil, domain.ErrInvalidFormat
 		},
-	}}
+	})
 	req := newUploadRequest(t, "user-1", "image", []byte("not an image"), "text/plain")
 	w := httptest.NewRecorder()
 
@@ -156,7 +162,7 @@ func TestUpload_InvalidFormat(t *testing.T) {
 }
 
 func TestUpload_TooLarge(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{}}
+	h := newTestHandler(&fakeService{})
 	// 11 МБ — больше лимита 10 МБ.
 	req := newUploadRequest(t, "user-1", "image", bytes.Repeat([]byte("a"), 11<<20), "image/png")
 	w := httptest.NewRecorder()
@@ -172,7 +178,7 @@ func TestUpload_TooLarge(t *testing.T) {
 }
 
 func TestUpload_Success(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		uploadFn: func(_ context.Context, userID, fileName string, data io.Reader) (*domain.Avatar, error) {
 			got, _ := io.ReadAll(data)
 			if !bytes.Equal(got, testPNG) {
@@ -184,7 +190,7 @@ func TestUpload_Success(t *testing.T) {
 				Status: domain.StatusReady,
 			}, nil
 		},
-	}}
+	})
 	req := newUploadRequest(t, "user-1", "image", testPNG, "image/png")
 	w := httptest.NewRecorder()
 
@@ -210,12 +216,12 @@ func TestUpload_Success(t *testing.T) {
 func TestUpload_FileFieldName(t *testing.T) {
 	// Спецификация API использует поле "file" — оно тоже должно приниматься.
 	var received string
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		uploadFn: func(_ context.Context, userID, fileName string, data io.Reader) (*domain.Avatar, error) {
 			received = userID
 			return &domain.Avatar{ID: "1", UserID: userID, Status: domain.StatusReady}, nil
 		},
-	}}
+	})
 	req := newUploadRequest(t, "user-1", "file", testPNG, "image/png")
 	w := httptest.NewRecorder()
 
@@ -230,11 +236,11 @@ func TestUpload_FileFieldName(t *testing.T) {
 }
 
 func TestGetAvatar_NotFound(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		getFn: func(_ context.Context, id, size, format string) (io.ReadCloser, storage.ObjectInfo, *domain.Avatar, error) {
 			return nil, storage.ObjectInfo{}, nil, domain.ErrNotFound
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/00000000-0000-0000-0000-000000000000", nil)
 	w := httptest.NewRecorder()
 
@@ -249,13 +255,13 @@ func TestGetAvatar_NotFound(t *testing.T) {
 }
 
 func TestGetAvatar_SuccessHeaders(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		getFn: func(_ context.Context, id, size, format string) (io.ReadCloser, storage.ObjectInfo, *domain.Avatar, error) {
 			return io.NopCloser(bytes.NewReader(testPNG)),
 				storage.ObjectInfo{ETag: "abc123", Size: int64(len(testPNG))},
 				&domain.Avatar{ID: id, MimeType: "image/png"}, nil
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/1", nil)
 	w := httptest.NewRecorder()
 
@@ -279,13 +285,13 @@ func TestGetAvatar_SuccessHeaders(t *testing.T) {
 }
 
 func TestGetAvatar_IfNoneMatch(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		getFn: func(_ context.Context, id, size, format string) (io.ReadCloser, storage.ObjectInfo, *domain.Avatar, error) {
 			return io.NopCloser(bytes.NewReader(testPNG)),
 				storage.ObjectInfo{ETag: "abc123", Size: int64(len(testPNG))},
 				&domain.Avatar{ID: id, MimeType: "image/png"}, nil
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/1", nil)
 	req.Header.Set("If-None-Match", `"abc123"`)
 	w := httptest.NewRecorder()
@@ -303,14 +309,14 @@ func TestGetAvatar_IfNoneMatch(t *testing.T) {
 func TestGetAvatar_ThumbnailSizeParams(t *testing.T) {
 	// Query-параметры size/format должны доходить до сервиса.
 	var gotSize, gotFormat string
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		getFn: func(_ context.Context, id, size, format string) (io.ReadCloser, storage.ObjectInfo, *domain.Avatar, error) {
 			gotSize, gotFormat = size, format
 			return io.NopCloser(bytes.NewReader(testPNG)),
 				storage.ObjectInfo{ETag: "e", Size: int64(len(testPNG)), ContentType: "image/jpeg"},
 				&domain.Avatar{ID: id, MimeType: "image/jpeg"}, nil
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/1?size=100x100&format=jpeg", nil)
 	w := httptest.NewRecorder()
 
@@ -328,11 +334,11 @@ func TestGetAvatar_ThumbnailSizeParams(t *testing.T) {
 }
 
 func TestGetAvatar_ThumbnailNotFound(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		getFn: func(_ context.Context, id, size, format string) (io.ReadCloser, storage.ObjectInfo, *domain.Avatar, error) {
 			return nil, storage.ObjectInfo{}, nil, domain.ErrThumbnailNotFound
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/1?size=300x300", nil)
 	w := httptest.NewRecorder()
 
@@ -347,7 +353,7 @@ func TestGetAvatar_ThumbnailNotFound(t *testing.T) {
 }
 
 func TestMetadata_OK(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		metadataFn: func(_ context.Context, id string) (*domain.Avatar, error) {
 			return &domain.Avatar{
 				ID: "a1", UserID: "user-1", FileName: "photo.png", MimeType: "image/png",
@@ -356,7 +362,7 @@ func TestMetadata_OK(t *testing.T) {
 				Status:     domain.StatusReady,
 			}, nil
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/a1/metadata", nil)
 	w := httptest.NewRecorder()
 
@@ -379,13 +385,13 @@ func TestMetadata_OK(t *testing.T) {
 }
 
 func TestListByUser_OK(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		listFn: func(_ context.Context, userID string) ([]domain.Avatar, error) {
 			return []domain.Avatar{
 				{ID: "a1", UserID: userID, Status: domain.StatusReady},
 			}, nil
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/user-1/avatars", nil)
 	w := httptest.NewRecorder()
 
@@ -401,11 +407,11 @@ func TestListByUser_OK(t *testing.T) {
 }
 
 func TestDeleteAvatar_Forbidden(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		deleteFn: func(_ context.Context, userID, id string) error {
 			return domain.ErrForbidden
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/a1", nil)
 	req.Header.Set("X-User-ID", "attacker")
 	w := httptest.NewRecorder()
@@ -421,7 +427,7 @@ func TestDeleteAvatar_Forbidden(t *testing.T) {
 }
 
 func TestDeleteAvatar_NoUserID(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{}}
+	h := newTestHandler(&fakeService{})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/a1", nil)
 	w := httptest.NewRecorder()
 
@@ -433,7 +439,7 @@ func TestDeleteAvatar_NoUserID(t *testing.T) {
 }
 
 func TestDeleteAvatar_NoContent(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{}}
+	h := newTestHandler(&fakeService{})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/a1", nil)
 	req.Header.Set("X-User-ID", "user-1")
 	w := httptest.NewRecorder()
@@ -446,11 +452,11 @@ func TestDeleteAvatar_NoContent(t *testing.T) {
 }
 
 func TestDeleteByUser_ForbiddenForForeignUser(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		deleteCurFn: func(_ context.Context, ownerID, userID string) error {
 			return domain.ErrForbidden
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/users/victim/avatar", nil)
 	req.Header.Set("X-User-ID", "attacker")
 	w := httptest.NewRecorder()
@@ -463,11 +469,11 @@ func TestDeleteByUser_ForbiddenForForeignUser(t *testing.T) {
 }
 
 func TestHealth_AllOK(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		healthFn: func(ctx context.Context) map[string]string {
 			return map[string]string{"database": "ok", "storage": "ok"}
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 
@@ -482,11 +488,11 @@ func TestHealth_AllOK(t *testing.T) {
 }
 
 func TestHealth_Degraded(t *testing.T) {
-	h := &AvatarHandler{svc: &fakeService{
+	h := newTestHandler(&fakeService{
 		healthFn: func(ctx context.Context) map[string]string {
 			return map[string]string{"database": "ok", "storage": "error: connection refused"}
 		},
-	}}
+	})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 

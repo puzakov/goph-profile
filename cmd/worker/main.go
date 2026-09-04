@@ -83,7 +83,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	}
 	defer func() { _ = publisher.Close() }()
 
-	w := worker.NewWorker(repository.NewAvatarRepository(pool), st, publisher, log)
+	w := worker.NewWorker(repository.NewAvatarRepository(pool, log), st, publisher, log)
 	log.Info("worker started", "rabbitmq", cfg.RabbitMQURL)
 
 	// Run блокируется до отмены контекста или фатальной ошибки консьюмера.

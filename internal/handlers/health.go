@@ -15,5 +15,5 @@ func (h *AvatarHandler) Health(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	writeJSON(w, code, map[string]any{"status": status, "components": components})
+	h.writeJSON(w, code, map[string]any{"status": status, "components": components})
 }

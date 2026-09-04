@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"regexp"
 	"testing"
 	"time"
@@ -17,7 +19,8 @@ func newMockRepo(t *testing.T) (AvatarRepository, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	t.Cleanup(mock.Close)
-	return NewAvatarRepository(mock), mock
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewAvatarRepository(mock, log), mock
 }
 
 func TestCreate_InsertsAvatar(t *testing.T) {

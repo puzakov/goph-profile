@@ -21,18 +21,19 @@ const maxUploadSize = 10 << 20
 // AvatarHandler обрабатывает запросы REST API.
 type AvatarHandler struct {
 	svc AvatarService
+	log *slog.Logger
 }
 
-// NewAvatarHandler создаёт обработчик REST API.
-func NewAvatarHandler(svc AvatarService) *AvatarHandler {
-	return &AvatarHandler{svc: svc}
+// NewAvatarHandler создаёт обработчик REST API с явным логгером.
+func NewAvatarHandler(svc AvatarService, log *slog.Logger) *AvatarHandler {
+	return &AvatarHandler{svc: svc, log: log}
 }
 
 // Upload обрабатывает POST /api/v1/avatars — загрузку аватарки.
 func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	if userID == "" {
-		writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
+		h.writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
 		return
 	}
 
@@ -41,11 +42,11 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "File too large",
+			h.writeError(w, http.StatusRequestEntityTooLarge, "File too large",
 				map[string]int{"max_size": maxUploadSize})
 			return
 		}
-		writeError(w, http.StatusBadRequest, "Invalid multipart form", err.Error())
+		h.writeError(w, http.StatusBadRequest, "Invalid multipart form", err.Error())
 		return
 	}
 
@@ -55,7 +56,7 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		file, header, err = r.FormFile("file")
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Missing image file",
+		h.writeError(w, http.StatusBadRequest, "Missing image file",
 			"expected multipart field: image or file")
 		return
 	}
@@ -64,19 +65,19 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	avatar, err := h.svc.Upload(r.Context(), userID, header.Filename, file)
 	switch {
 	case errors.Is(err, domain.ErrInvalidFormat):
-		writeError(w, http.StatusBadRequest, "Invalid file format",
+		h.writeError(w, http.StatusBadRequest, "Invalid file format",
 			"Supported formats: jpeg, png, webp")
 		return
 	case errors.Is(err, domain.ErrFileTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "File too large",
+		h.writeError(w, http.StatusRequestEntityTooLarge, "File too large",
 			map[string]int{"max_size": maxUploadSize})
 		return
 	case err != nil:
-		writeInternalError(w, r, err)
+		h.writeInternalError(w, r, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	h.writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         avatar.ID,
 		"user_id":    avatar.UserID,
 		"url":        avatarURL(avatar.ID),
@@ -129,7 +130,7 @@ func (h *AvatarHandler) Metadata(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"id":         avatar.ID,
 		"user_id":    avatar.UserID,
 		"file_name":  avatar.FileName,
@@ -163,14 +164,14 @@ func (h *AvatarHandler) ListByUser(w http.ResponseWriter, r *http.Request) {
 			"created_at": a.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	writeJSON(w, http.StatusOK, list)
+	h.writeJSON(w, http.StatusOK, list)
 }
 
 // DeleteAvatar обрабатывает DELETE /api/v1/avatars/{avatarID}.
 func (h *AvatarHandler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	if userID == "" {
-		writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
+		h.writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
 		return
 	}
 
@@ -185,7 +186,7 @@ func (h *AvatarHandler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 func (h *AvatarHandler) DeleteByUser(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	if userID == "" {
-		writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
+		h.writeError(w, http.StatusBadRequest, "X-User-ID header is required", nil)
 		return
 	}
 
@@ -211,7 +212,7 @@ func (h *AvatarHandler) serveImage(w http.ResponseWriter, r *http.Request, rc io
 
 	if _, err := io.Copy(w, rc); err != nil {
 		// Заголовки уже отправлены — остаётся только залогировать.
-		slog.Error("stream avatar", "path", r.URL.Path, "error", err)
+		h.log.Error("stream avatar", "path", r.URL.Path, "error", err)
 	}
 }
 
@@ -219,14 +220,14 @@ func (h *AvatarHandler) serveImage(w http.ResponseWriter, r *http.Request, rc io
 func (h *AvatarHandler) writeAvatarError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		writeError(w, http.StatusNotFound, "Avatar not found", nil)
+		h.writeError(w, http.StatusNotFound, "Avatar not found", nil)
 	case errors.Is(err, domain.ErrThumbnailNotFound):
-		writeError(w, http.StatusNotFound, "Thumbnail not found", nil)
+		h.writeError(w, http.StatusNotFound, "Thumbnail not found", nil)
 	case errors.Is(err, domain.ErrForbidden):
-		writeError(w, http.StatusForbidden, "Forbidden",
+		h.writeError(w, http.StatusForbidden, "Forbidden",
 			"You can only delete your own avatars")
 	default:
-		writeInternalError(w, r, err)
+		h.writeInternalError(w, r, err)
 	}
 }
 

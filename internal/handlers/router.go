@@ -16,7 +16,7 @@ func NewRouter(svc AvatarService, staticDir string, log *slog.Logger) http.Handl
 	r.Use(RequestLogger(log))
 	r.Use(middleware.Recoverer)
 
-	api := NewAvatarHandler(svc)
+	api := NewAvatarHandler(svc, log)
 
 	// Healthcheck.
 	r.Get("/health", api.Health)

@@ -134,7 +134,7 @@ func (s *FlowSuite) SetupSuite() {
 	workerCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	w := worker.NewWorker(repository.NewAvatarRepository(pool), st, publisher, log)
+	w := worker.NewWorker(repository.NewAvatarRepository(pool, log), st, publisher, log)
 	go func() {
 		if err := w.Run(workerCtx, amqpURL); err != nil {
 			log.Error("worker stopped with error", "error", err)
@@ -142,7 +142,7 @@ func (s *FlowSuite) SetupSuite() {
 	}()
 
 	// --- HTTP-сервер ---
-	svc := services.NewAvatarService(repository.NewAvatarRepository(pool), st, publisher, log)
+	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, log)
 	s.server = httptest.NewServer(handlers.NewRouter(svc, "../../web/static", log))
 }
 

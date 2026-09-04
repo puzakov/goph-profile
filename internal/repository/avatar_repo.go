@@ -40,13 +40,14 @@ type AvatarRepository interface {
 }
 
 type avatarRepo struct {
-	db DBTX
+	db  DBTX
+	log *slog.Logger
 }
 
 // NewAvatarRepository создаёт репозиторий поверх пула соединений pgx
-// (в тестах вместо пула подойдёт pgxmock.PgxPoolIface).
-func NewAvatarRepository(db DBTX) AvatarRepository {
-	return &avatarRepo{db: db}
+// (в тестах вместо пула подойдёт pgxmock.PgxPoolIface) с явным логгером.
+func NewAvatarRepository(db DBTX, log *slog.Logger) AvatarRepository {
+	return &avatarRepo{db: db, log: log}
 }
 
 var _ DBTX = (*pgxpool.Pool)(nil)
@@ -90,7 +91,7 @@ func (r *avatarRepo) GetByID(ctx context.Context, id string) (*domain.Avatar, er
 		SELECT `+selectColumns+`
 		FROM avatars
 		WHERE id = $1 AND deleted_at IS NULL`, id)
-	return scanAvatar(row)
+	return r.scanAvatar(row)
 }
 
 func (r *avatarRepo) GetCurrentByUser(ctx context.Context, userID string) (*domain.Avatar, error) {
@@ -100,7 +101,7 @@ func (r *avatarRepo) GetCurrentByUser(ctx context.Context, userID string) (*doma
 		WHERE user_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT 1`, userID)
-	return scanAvatar(row)
+	return r.scanAvatar(row)
 }
 
 func (r *avatarRepo) ListByUser(ctx context.Context, userID string) ([]domain.Avatar, error) {
@@ -117,7 +118,7 @@ func (r *avatarRepo) ListByUser(ctx context.Context, userID string) ([]domain.Av
 
 	avatars := make([]domain.Avatar, 0)
 	for rows.Next() {
-		a, err := scanAvatar(rows)
+		a, err := r.scanAvatar(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +200,7 @@ func (r *avatarRepo) Ping(ctx context.Context) error {
 	return r.db.Ping(ctx)
 }
 
-func scanAvatar(row pgx.Row) (*domain.Avatar, error) {
+func (r *avatarRepo) scanAvatar(row pgx.Row) (*domain.Avatar, error) {
 	var a domain.Avatar
 	var thumbnails []byte
 	if err := row.Scan(&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes,
@@ -211,7 +212,7 @@ func scanAvatar(row pgx.Row) (*domain.Avatar, error) {
 	}
 	if len(thumbnails) > 0 {
 		if err := json.Unmarshal(thumbnails, &a.Thumbnails); err != nil {
-			slog.Error("unmarshal thumbnail_s3_keys failed",
+			r.log.Error("unmarshal thumbnail_s3_keys failed",
 				"avatar_id", a.ID, "error", err)
 		}
 	}
