@@ -1,0 +1,28 @@
+# Конфигурация статического анализа golangci-lint (v2).
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck     # непроверенные ошибки
+    - govet        # vet-проверки
+    - ineffassign  # бесполезные присваивания
+    - staticcheck  # продвинутый статический анализ
+    - unused       # неиспользуемый код
+    - misspell     # опечатки
+    - unconvert    # лишние преобразования типов
+    - bodyclose    # незакрытые тела HTTP-ответов
+    - revive       # стилевые правила
+  # Фейки в тестах обязаны повторять сигнатуры интерфейсов,
+  # поэтому неиспользуемые параметры там — норма.
+  exclusions:
+    rules:
+      - path: _test\.go
+        text: unused-parameter
+
+formatters:
+  enable:
+    - gofmt
+
+run:
+  timeout: 5m
