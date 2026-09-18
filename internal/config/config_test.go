@@ -83,6 +83,54 @@ func TestLoad_ExplicitEmptyKeptEmpty(t *testing.T) {
 	require.Equal(t, "", cfg.StaticDir)
 }
 
+func TestLoad_ObservabilityDefaults(t *testing.T) {
+	setRequired(t)
+	unset(t, "LOG_LEVEL", "LOG_FORMAT", "OTEL_EXPORTER_OTLP_ENDPOINT",
+		"METRICS_ADDR", "RABBITMQ_MANAGEMENT_URL",
+		"RABBITMQ_MANAGEMENT_USER", "RABBITMQ_MANAGEMENT_PASSWORD")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.Equal(t, "info", cfg.LogLevel)
+	require.Equal(t, "json", cfg.LogFormat)
+	require.Equal(t, "", cfg.OTLPEndpoint, "без коллектора трейсинг выключен")
+	require.Equal(t, ":9091", cfg.MetricsAddr)
+	require.Equal(t, "", cfg.RabbitMQManagementURL, "сбор метрик очередей выключен")
+}
+
+func TestLoad_ObservabilityFromEnv(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_FORMAT", "text")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4318")
+	t.Setenv("METRICS_ADDR", ":9999")
+	t.Setenv("RABBITMQ_MANAGEMENT_URL", "http://rabbitmq:15672")
+	t.Setenv("RABBITMQ_MANAGEMENT_USER", "admin")
+	t.Setenv("RABBITMQ_MANAGEMENT_PASSWORD", "secret")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.Equal(t, "debug", cfg.LogLevel)
+	require.Equal(t, "text", cfg.LogFormat)
+	require.Equal(t, "http://jaeger:4318", cfg.OTLPEndpoint)
+	require.Equal(t, ":9999", cfg.MetricsAddr)
+	require.Equal(t, "http://rabbitmq:15672", cfg.RabbitMQManagementURL)
+	require.Equal(t, "admin", cfg.RabbitMQManagementUser)
+	require.Equal(t, "secret", cfg.RabbitMQManagementPassword)
+}
+
+func TestLoad_ExplicitEmptyOTLPEndpoint(t *testing.T) {
+	setRequired(t)
+	// Явно выключенный трейсинг не должен подменяться дефолтом.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "", cfg.OTLPEndpoint)
+}
+
 func TestLoad_FromEnv(t *testing.T) {
 	setRequired(t)
 	t.Setenv("HTTP_ADDR", ":9090")

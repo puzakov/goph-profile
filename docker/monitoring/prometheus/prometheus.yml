@@ -1,0 +1,28 @@
+# Конфигурация Prometheus стенда GophProfile.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # HTTP-сервер: технические и бизнес-метрики на /metrics.
+  - job_name: goph-server
+    static_configs:
+      - targets: ["server:8080"]
+
+  # Воркер: пул БД, глубина очередей, объём данных; метрики на отдельном порту.
+  - job_name: goph-worker
+    static_configs:
+      - targets: ["worker:9091"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

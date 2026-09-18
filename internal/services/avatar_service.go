@@ -11,8 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	// Регистрация декодеров форматов изображений для image.DecodeConfig.
 	_ "golang.org/x/image/webp"
@@ -22,9 +26,14 @@ import (
 
 	"goph-profile/internal/domain"
 	"goph-profile/internal/messaging"
+	"goph-profile/internal/metrics"
 	"goph-profile/internal/repository"
 	"goph-profile/internal/storage"
+	"goph-profile/internal/telemetry"
 )
+
+// tracer — инструмент создания спанов бизнес-логики.
+var tracer = otel.Tracer("avatar-service")
 
 // MaxUploadSize — максимальный размер загружаемого файла (10 МБ).
 const MaxUploadSize = 10 << 20
@@ -71,7 +80,22 @@ func NewAvatarService(repo repository.AvatarRepository, st storage.AvatarStorage
 // Upload сохраняет аватарку: файл — в S3, метаданные — в PostgreSQL,
 // затем публикует AvatarUploadEvent. Обработка миниатюр выполняется
 // воркером асинхронно, поэтому статус аватарки — pending.
-func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, data io.Reader) (*domain.Avatar, error) {
+func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, data io.Reader) (avatar *domain.Avatar, err error) {
+	start := time.Now()
+	ctx, span := tracer.Start(ctx, "upload_avatar", trace.WithAttributes(
+		attribute.String("user_id", userID),
+		attribute.String("file_name", filepath.Base(fileName)),
+	))
+	// Ошибка и длительность операции попадают в трейс и в бизнес-метрики.
+	defer func() {
+		telemetry.EndSpan(span, err)
+		status := metrics.StatusOK
+		if err != nil {
+			status = metrics.StatusError
+		}
+		metrics.ObserveUpload(status, time.Since(start))
+	}()
+
 	// Ограничиваем чтение, чтобы не съесть всю память: файл больше лимита считаем ошибкой.
 	buf, err := io.ReadAll(io.LimitReader(data, MaxUploadSize+1))
 	if err != nil {
@@ -80,6 +104,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	if len(buf) > MaxUploadSize {
 		return nil, domain.ErrFileTooLarge
 	}
+	span.SetAttributes(attribute.Int64("file_size", int64(len(buf))))
 
 	mime := detectImageType(buf)
 	if _, ok := domain.SupportedMimeTypes[mime]; !ok {
@@ -94,7 +119,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 		return nil, fmt.Errorf("put object: %w", err)
 	}
 
-	avatar := &domain.Avatar{
+	avatar = &domain.Avatar{
 		ID:        id,
 		UserID:    userID,
 		FileName:  filepath.Base(fileName),
