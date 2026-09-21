@@ -152,7 +152,8 @@ func run(log *slog.Logger, cfg *config.Config) error {
 func registerMetrics(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) {
 	prometheus.MustRegister(
 		metrics.NewPGXPoolCollector(pool),
-		metrics.NewStorageCollector(pool, log),
+		// Агрегат по таблице считается не чаще TTL, а не на каждый scrape.
+		metrics.NewStorageCollector(pool, metrics.StorageCacheTTL, log),
 	)
 	// Глубина очередей: коллектор включается только при заданном адресе
 	// Management API — иначе учётные данные брокера не нужны вовсе.

@@ -51,9 +51,10 @@ var (
 		Buckets:   prometheus.DefBuckets,
 	}, []string{"method", "route", "status"})
 
-	// avatars_storage_bytes{user_id} объявлена не здесь, а коллектором
-	// (storage_collector.go): значение считается из БД при каждом scrape,
-	// а не накапливается в памяти процесса.
+	// Метрики объёма хранилища (avatars_storage_bytes,
+	// avatars_users_with_avatars) объявлены не здесь, а коллектором
+	// (storage_collector.go): они считаются по БД, а не накапливаются
+	// в памяти процесса.
 )
 
 // ObserveHTTP фиксирует RED-метрики одного HTTP-запроса.

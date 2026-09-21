@@ -111,7 +111,8 @@ curl -X POST http://localhost:8080/api/v1/avatars -H "X-User-ID: user-1" -F "ima
 | `avatars_upload_duration_seconds{status}` | histogram | Длительность загрузки |
 | `avatars_http_requests_total{method,route,status}` | counter | RED по HTTP-запросам |
 | `avatars_http_request_duration_seconds{method,route,status}` | histogram | Длительность запросов |
-| `avatars_storage_bytes{user_id}` | gauge | Размер живых аватарок пользователя в S3 |
+| `avatars_storage_bytes` | gauge | Суммарный размер живых аватарок в S3 |
+| `avatars_users_with_avatars` | gauge | Число пользователей с живыми аватарками |
 | `avatars_queue_messages{queue}`, `avatars_queue_consumers{queue}` | gauge | Глубина очередей RabbitMQ |
 | `avatars_db_*` | gauge/counter | Пул соединений PostgreSQL |
 
@@ -124,8 +125,15 @@ curl -X POST http://localhost:8080/api/v1/avatars -H "X-User-ID: user-1" -F "ima
 
 Каждый сервис отдаёт метрики своего процесса (`avatars_db_*` — свой пул
 соединений, сервер — HTTP и загрузки). Метрики состояния системы
-(`avatars_storage_bytes`, `avatars_queue_*`) отдаёт только воркер: значение не
-зависит от процесса, а два источника одного gauge дали бы двойной счёт в `sum()`.
+(`avatars_storage_bytes`, `avatars_users_with_avatars`, `avatars_queue_*`) отдаёт
+только воркер: значение не зависит от процесса, а два источника одного gauge
+дали бы двойной счёт в `sum()`.
+
+Объём хранилища — агрегат без разбивки по пользователям: метка `user_id` росла
+бы вместе с числом пользователей и в сумме с их аватарками (неограниченная
+кардинальность). Запрос агрегата выполняется не на каждый scrape, а раз в
+`StorageCacheTTL` (минута), поэтому при недоступной БД отдаётся последний
+удачный снимок, а не пустая метрика.
 
 ### Логи
 

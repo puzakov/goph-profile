@@ -2,13 +2,15 @@ package metrics_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
-	"regexp"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pashagolub/pgxmock/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
@@ -59,36 +61,106 @@ func metricValue(m *dto.Metric) float64 {
 	}
 }
 
-func TestStorageCollector_EmitsBytesPerUser(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	t.Cleanup(mock.Close)
+// fakeQueryer — заглушка пула: считает обращения к БД и отдаёт заданный
+// агрегат. Счётчик нужен, чтобы проверить кэш: пока снимок свежий,
+// обращений к БД быть не должно.
+type fakeQueryer struct {
+	calls atomic.Int64
+	bytes int64
+	users int64
+	err   error
+}
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT user_id, COALESCE(SUM(size_bytes), 0)")).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "sum"}).
-			AddRow("user-1", int64(2048)).
-			AddRow("user-2", int64(512)))
+func (f *fakeQueryer) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+	f.calls.Add(1)
+	return fakeRow{bytes: f.bytes, users: f.users, err: f.err}
+}
 
-	values := gather(t, metrics.NewStorageCollector(mock, testLogger()))
+// fakeRow отдаёт заранее известный агрегат в приёмники коллектора.
+type fakeRow struct {
+	bytes int64
+	users int64
+	err   error
+}
 
-	require.Equal(t, float64(2048), values["avatars_storage_bytes_user-1"])
-	require.Equal(t, float64(512), values["avatars_storage_bytes_user-2"])
-	require.NoError(t, mock.ExpectationsWereMet())
+func (r fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) != 2 {
+		return fmt.Errorf("ожидалось два приёмника, получено %d", len(dest))
+	}
+	bytes, ok := dest[0].(*int64)
+	if !ok {
+		return fmt.Errorf("приёмник объёма: %T", dest[0])
+	}
+	users, ok := dest[1].(*int64)
+	if !ok {
+		return fmt.Errorf("приёмник числа пользователей: %T", dest[1])
+	}
+	*bytes, *users = r.bytes, r.users
+	return nil
+}
+
+func TestStorageCollector_EmitsAggregate(t *testing.T) {
+	db := &fakeQueryer{bytes: 2560, users: 2}
+
+	values := gather(t, metrics.NewStorageCollector(db, metrics.StorageCacheTTL, testLogger()))
+
+	// Метрики без метки пользователя: кардинальность не растёт с числом
+	// пользователей.
+	require.Equal(t, float64(2560), values["avatars_storage_bytes"])
+	require.Equal(t, float64(2), values["avatars_users_with_avatars"])
+	require.EqualValues(t, 1, db.calls.Load())
+}
+
+func TestStorageCollector_ServesSnapshotWithinTTL(t *testing.T) {
+	db := &fakeQueryer{bytes: 1024, users: 1}
+	collector := metrics.NewStorageCollector(db, metrics.StorageCacheTTL, testLogger())
+
+	first := gather(t, collector)
+	second := gather(t, collector)
+
+	require.Equal(t, float64(1024), first["avatars_storage_bytes"])
+	require.Equal(t, first, second)
+	require.EqualValues(t, 1, db.calls.Load(), "второй scrape обошёлся без запроса к БД")
+}
+
+func TestStorageCollector_RefreshesAfterTTL(t *testing.T) {
+	db := &fakeQueryer{bytes: 1024, users: 1}
+	collector := metrics.NewStorageCollector(db, 10*time.Millisecond, testLogger())
+
+	require.Equal(t, float64(1024), gather(t, collector)["avatars_storage_bytes"])
+
+	db.bytes, db.users = 4096, 3
+	time.Sleep(20 * time.Millisecond)
+
+	values := gather(t, collector)
+	require.Equal(t, float64(4096), values["avatars_storage_bytes"])
+	require.Equal(t, float64(3), values["avatars_users_with_avatars"])
+	require.EqualValues(t, 2, db.calls.Load())
 }
 
 func TestStorageCollector_QueryErrorEmitsNothing(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	t.Cleanup(mock.Close)
-
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT user_id, COALESCE(SUM(size_bytes), 0)")).
-		WillReturnError(context.DeadlineExceeded)
+	db := &fakeQueryer{err: context.DeadlineExceeded}
 
 	// Ошибка сбора не ломает scrape: метрик просто нет.
-	values := gather(t, metrics.NewStorageCollector(mock, testLogger()))
+	values := gather(t, metrics.NewStorageCollector(db, metrics.StorageCacheTTL, testLogger()))
 
 	require.Empty(t, values)
-	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Недоступная БД не должна обнулять метрику: отдаётся последний удачный снимок.
+func TestStorageCollector_KeepsSnapshotOnError(t *testing.T) {
+	db := &fakeQueryer{bytes: 2048, users: 2}
+	collector := metrics.NewStorageCollector(db, 10*time.Millisecond, testLogger())
+	require.Equal(t, float64(2048), gather(t, collector)["avatars_storage_bytes"])
+
+	db.err = context.DeadlineExceeded
+	time.Sleep(20 * time.Millisecond)
+
+	require.Equal(t, float64(2048), gather(t, collector)["avatars_storage_bytes"])
+	require.EqualValues(t, 2, db.calls.Load(), "снимок перечитан, но отдан прошлый")
 }
 
 func TestPGXPoolCollector_ReportsPoolStatistics(t *testing.T) {
