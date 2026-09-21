@@ -32,8 +32,9 @@ import (
 	"goph-profile/internal/telemetry"
 )
 
-// tracer — инструмент создания спанов бизнес-логики.
-var tracer = otel.Tracer("avatar-service")
+// tracer — инструмент создания спанов бизнес-логики: имя то же, что
+// у сервиса в ресурсе трейсов.
+var tracer = otel.Tracer(telemetry.ServiceServer)
 
 // MaxUploadSize — максимальный размер загружаемого файла (10 МБ).
 const MaxUploadSize = 10 << 20

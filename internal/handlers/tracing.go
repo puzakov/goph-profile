@@ -5,10 +5,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-)
 
-// serverName — имя сервиса в именах операций трейсинга.
-const serverName = "avatar-server"
+	"goph-profile/internal/telemetry"
+)
 
 // unmatchedRoute — метка запросов, не совпавших ни с одним маршрутом.
 // Путь из URL в метрики не попадает: иначе кардинальность метки растёт
@@ -18,8 +17,13 @@ const unmatchedRoute = "unmatched"
 // Tracing оборачивает HTTP-запросы в спаны OpenTelemetry.
 // Миддлвар ставится снаружи RequestLogger, чтобы логгер видел спан в контексте,
 // и извлекает контекст трейса из заголовков входящего запроса.
+//
+// Первый аргумент otelhttp — имя операции: оно попадает в имя спана, только
+// если шаблон маршрута неизвестен (имя инструмента otelhttp задаёт сам).
+// Значение берётся из имени сервиса — чтобы в трейсах не заводилось второе,
+// похожее имя.
 func Tracing() func(http.Handler) http.Handler {
-	return otelhttp.NewMiddleware(serverName, otelhttp.WithSpanNameFormatter(spanName))
+	return otelhttp.NewMiddleware(telemetry.ServiceServer, otelhttp.WithSpanNameFormatter(spanName))
 }
 
 // spanName возвращает «METHOD шаблон-маршрута» вместо конкретного пути,

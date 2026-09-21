@@ -3,7 +3,11 @@ package telemetry_test
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -50,6 +54,43 @@ func TestInitTracerProvider_EmptyEndpointIsNoop(t *testing.T) {
 	shutdown, err := telemetry.InitTracerProvider(context.Background(), "", "test-service")
 	require.NoError(t, err, "без коллектора сервис должен запускаться")
 	require.NoError(t, shutdown(context.Background()))
+}
+
+// Имя сервиса уходит в ресурс спанов: по атрибуту service.name Jaeger
+// группирует спаны в сервис, и разъехавшиеся значения дали бы вместо одного
+// сервиса два. Проверяется на живом экспортёре: OTLP-payload ловит
+// тестовый HTTP-сервер.
+func TestInitTracerProvider_ExportsServiceName(t *testing.T) {
+	payload := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		select {
+		case payload <- string(body):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Провайдер глобальный: после теста возвращаем прежний.
+	prev := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	shutdown, err := telemetry.InitTracerProvider(context.Background(), srv.URL, telemetry.ServiceServer)
+	require.NoError(t, err)
+
+	_, span := otel.Tracer("test").Start(context.Background(), "probe")
+	span.End()
+	require.NoError(t, shutdown(context.Background()), "остановка сбрасывает батчер")
+
+	select {
+	case body := <-payload:
+		// Строки в protobuf лежат как есть — имя видно в теле запроса.
+		require.Contains(t, body, telemetry.ServiceServer)
+		require.Contains(t, body, "probe", "в батч попал и сам спан")
+	case <-time.After(5 * time.Second):
+		t.Fatal("экспортёр не отправил спаны")
+	}
 }
 
 // Propagator ставится и без экспортёра: именно он переносит traceparent

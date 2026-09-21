@@ -26,9 +26,6 @@ import (
 	"goph-profile/internal/telemetry"
 )
 
-// serviceName — имя сервиса в трейсах.
-const serviceName = "avatar-server"
-
 func main() {
 	// Настройки загружаются первыми: формат и уровень логов заданы в них,
 	// а на ошибке конфигурации логгер ещё не сконфигурирован.
@@ -58,7 +55,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	shutdownTracer, err := telemetry.InitTracerProvider(ctx, cfg.OTLPEndpoint, serviceName)
+	shutdownTracer, err := telemetry.InitTracerProvider(ctx, cfg.OTLPEndpoint, telemetry.ServiceServer)
 	if err != nil {
 		return fmt.Errorf("init tracer provider: %w", err)
 	}

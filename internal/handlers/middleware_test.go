@@ -109,6 +109,18 @@ func TestRequestLogger_SetsRouteOnSpan(t *testing.T) {
 	require.Equal(t, testRoute, attrs["http.route"])
 }
 
+// Незаматченный маршрут: имя спана взять неоткуда, кроме переданной операции,
+// а она равна имени сервиса из telemetry — не литералу в этом пакете.
+func TestTracing_UnmatchedRouteUsesServiceName(t *testing.T) {
+	router, _, recorder, _ := newTracedRouter(t)
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nope", nil))
+
+	ended := recorder.Ended()
+	require.Len(t, ended, 1)
+	require.Equal(t, telemetry.ServiceServer, ended[0].Name())
+}
+
 func TestRequestLogger_RecordsRedMetrics(t *testing.T) {
 	router, _, _, registry := newTracedRouter(t)
 

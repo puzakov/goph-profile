@@ -25,8 +25,10 @@ import (
 	"goph-profile/internal/telemetry"
 )
 
-// tracer — инструмент создания спанов обработки сообщений.
-var tracer = otel.Tracer("avatar-worker")
+// tracer — инструмент создания спанов обработки сообщений: имя то же, что
+// у сервиса в ресурсе трейсов, иначе спаны одного процесса выглядели бы
+// как спаны разных сервисов.
+var tracer = otel.Tracer(telemetry.ServiceWorker)
 
 // jpegQuality — качество кодирования миниатюр JPEG.
 const jpegQuality = 85
