@@ -10,6 +10,8 @@
 - **PostgreSQL 16** — метаданные аватарок; миграции через **goose** (up/down, встроены в бинарник)
 - **MinIO** (S3-совместимо) — файлы изображений
 - **RabbitMQ** — события обработки, ретраи с экспоненциальным backoff через DLX
+- **OpenTelemetry** — трейсинг (HTTP, PostgreSQL, S3, RabbitMQ), метрики, корреляция логов
+- **Prometheus + Grafana + Loki + Jaeger + Alertmanager** — мониторинг локального стенда
 - **Docker Compose** — локальный стенд
 - Тесты: unit (pgxmock, testify), интеграционные (testcontainers-go, testify/suite), `golangci-lint`
 
@@ -79,6 +81,97 @@ RABBITMQ_URL=... ./worker
 
 Настройки — в `.env.example`.
 
+## Наблюдаемость
+
+Три сигнала сшиты одним `trace_id`: HTTP-запрос на входе → спан сервиса →
+SQL-запрос, вызов S3 и публикация в RabbitMQ → обработка в воркере.
+
+### Трейсинг
+
+Спаны уходят по OTLP/HTTP в Jaeger (`OTEL_EXPORTER_OTLP_ENDPOINT`, по умолчанию
+`http://localhost:4318`). Пустое значение выключает экспорт — сервис работает
+с no-op провайдером, так запускаются тесты.
+
+Инструментированы HTTP-слой (`otelhttp`), PostgreSQL (`otelpgx`), S3 и публикация
+событий. Контекст трейса переносится в заголовках HTTP и в headers AMQP-сообщения,
+поэтому трейс воркера — продолжение трейса сервера.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/avatars -H "X-User-ID: user-1" -F "image=@photo.png"
+# Jaeger: http://localhost:16686 → service avatar-server → трейс POST /api/v1/avatars
+```
+
+### Метрики
+
+`/metrics` отдаёт сервер (на `HTTP_ADDR`) и воркер (на `METRICS_ADDR`, по умолчанию `:9091`).
+
+| Метрика | Тип | Описание |
+|---|---|---|
+| `avatars_uploads_total{status}` | counter | Загрузки аватарок: `ok` / `error` |
+| `avatars_upload_duration_seconds{status}` | histogram | Длительность загрузки |
+| `avatars_http_requests_total{method,route,status}` | counter | RED по HTTP-запросам |
+| `avatars_http_request_duration_seconds{method,route,status}` | histogram | Длительность запросов |
+| `avatars_storage_bytes` | gauge | Суммарный размер живых аватарок в S3 |
+| `avatars_users_with_avatars` | gauge | Число пользователей с живыми аватарками |
+| `avatars_queue_messages{queue}`, `avatars_queue_consumers{queue}` | gauge | Глубина очередей RabbitMQ |
+| `avatars_db_*` | gauge/counter | Пул соединений PostgreSQL |
+
+Метка `route` — шаблон маршрута (`/api/v1/avatars/{avatarID}`), а не путь запроса:
+иначе кардинальность растёт с каждым идентификатором. Незаматченные пути
+считаются как `unmatched`.
+
+Метрики очередей собираются с RabbitMQ Management API и включаются только при
+заданном `RABBITMQ_MANAGEMENT_URL`.
+
+Каждый сервис отдаёт метрики своего процесса (`avatars_db_*` — свой пул
+соединений, сервер — HTTP и загрузки). Метрики состояния системы
+(`avatars_storage_bytes`, `avatars_users_with_avatars`, `avatars_queue_*`) отдаёт
+только воркер: значение не зависит от процесса, а два источника одного gauge
+дали бы двойной счёт в `sum()`.
+
+Объём хранилища — агрегат без разбивки по пользователям: метка `user_id` росла
+бы вместе с числом пользователей и в сумме с их аватарками (неограниченная
+кардинальность). Запрос агрегата выполняется не на каждый scrape, а раз в
+`StorageCacheTTL` (минута), поэтому при недоступной БД отдаётся последний
+удачный снимок, а не пустая метрика.
+
+Реестр Prometheus создаётся в `main` и передаётся явно (`metrics.NewRegistry()`
+→ `metrics.New(reg)`): глобального реестра сервис не использует. Поэтому
+коллекторы и метрики процесса регистрирует вызывающая сторона, а тесты
+работают с собственным реестром и проверяют точные значения, а не дельты
+(помощники — `internal/metricstest`).
+
+### Логи
+
+JSON в stdout: `time`, `level`, `msg`, `trace_id`, `span_id` плюс поля запроса
+(`request_id`, `method`, `path`, `route`, `status`, `bytes`, `duration_ms`).
+Уровень и формат — `LOG_LEVEL` (`debug|info|warn|error`) и `LOG_FORMAT` (`json|text`).
+
+```bash
+docker compose -f docker/docker-compose.yml logs server | jq 'select(.msg=="request")'
+```
+
+### Стенд мониторинга
+
+```bash
+cp docker/.env.example docker/.env    # задать GRAFANA_PASSWORD (дефолтной admin/admin нет)
+make compose-up                       # основной стенд
+make compose-up-monitoring            # Prometheus, Grafana, Loki, Jaeger, Alertmanager
+```
+
+| Сервис | Адрес | Что смотреть |
+|---|---|---|
+| Grafana | http://localhost:3000 | Дашборды `GophProfile`: Service overview, Business KPIs, Infrastructure |
+| Prometheus | http://localhost:9090 | `/targets`, `/alerts` |
+| Jaeger | http://localhost:16686 | Трейсы сквозь server и worker |
+| Loki | http://localhost:3100 | Логи (через Grafana → Explore; из лога можно перейти в трейс) |
+| Alertmanager | http://localhost:9093 | Сработавшие алерты |
+
+Логи собирает Promtail через docker-сокет, поэтому основной стенд не меняется.
+Алерты описаны в `docker/monitoring/prometheus/rules.yml`:
+`HighErrorRate` (доля ошибок загрузок > 10% в течение 5 минут, warning) и
+`HighResponseTime` (p95 загрузки > 5 с в течение 2 минут, critical).
+
 ## Разработка
 
 ```bash
@@ -88,6 +181,8 @@ make test-cover        # тесты + покрытие (требование: >5
 make test-integration  # интеграционные тесты (testcontainers, нужен Docker)
 make lint              # golangci-lint
 make compose-up        # локальный стенд
+make compose-up-monitoring    # стенд мониторинга (запускать вторым)
+make compose-down-monitoring  # остановить мониторинг
 make migrate-up        # применить миграции через goose CLI (вне сервиса)
 make migrate-down      # откатить последнюю миграцию
 make migrate-status    # статус миграций
@@ -110,12 +205,15 @@ make migrate-status    # статус миграций
 │   ├── domain/        # сущности, статусы, события брокера
 │   ├── handlers/      # HTTP-обработчики, роутер, middleware
 │   ├── imaging/       # утилиты работы с изображениями (crop/resize/JPEG)
-│   ├── messaging/     # RabbitMQ: publisher, топология, retry-политика
+│   ├── messaging/     # RabbitMQ: publisher, топология, retry-политика, propagation трейса
+│   ├── metrics/       # метрики Prometheus и коллекторы (пул БД, S3, очереди)
+│   ├── metricstest/   # чтение метрик из реестра в тестах
 │   ├── repository/    # PostgreSQL: метаданные, event_dedup
 │   ├── services/      # бизнес-логика
 │   ├── storage/       # S3-совместимое хранилище (MinIO)
+│   ├── telemetry/     # OpenTelemetry: трейсинг, логирование, корреляция
 │   └── worker/        # консьюмеры событий, конвейер обработки
-├── docker/            # Dockerfile, docker-compose
+├── docker/            # Dockerfile, docker-compose, конфиги мониторинга
 ├── tests/integration/ # интеграционные тесты (testcontainers-go)
 └── web/static/        # фронтенд (форма загрузки)
 ```

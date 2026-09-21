@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"goph-profile/internal/domain"
+	"goph-profile/internal/messaging"
 	"goph-profile/internal/storage"
 )
 
@@ -397,7 +398,7 @@ func TestHandleDelivery_SuccessAcks(t *testing.T) {
 	ack := &fakeAck{}
 	w := NewWorker(newFakeRepo(), newFakeStorage(), &fakePublisher{}, testLogger())
 
-	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, nil),
+	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, nil), messaging.UploadQueue,
 		func(_ context.Context, _ amqp.Delivery) error { return nil })
 
 	require.Equal(t, 1, ack.acked)
@@ -409,7 +410,7 @@ func TestHandleDelivery_RetryableErrorRepublishes(t *testing.T) {
 	pub := &fakePublisher{}
 	w := NewWorker(newFakeRepo(), newFakeStorage(), pub, testLogger())
 
-	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, []byte("{}")),
+	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, []byte("{}")), messaging.UploadQueue,
 		func(_ context.Context, d amqp.Delivery) error {
 			return &handlerError{avatarID: "a1", err: errors.New("db down")}
 		})
@@ -427,7 +428,7 @@ func TestHandleDelivery_ExhaustedRetriesGoToDeadLetter(t *testing.T) {
 
 	// Попытки исчерпаны: x-retry-count = 5.
 	headers := amqp.Table{"x-retry-count": int32(5)}
-	w.handleDelivery(context.Background(), delivery(ack, "m1", headers, []byte("{}")),
+	w.handleDelivery(context.Background(), delivery(ack, "m1", headers, []byte("{}")), messaging.UploadQueue,
 		func(_ context.Context, d amqp.Delivery) error {
 			return &handlerError{avatarID: "a1", err: errors.New("still down")}
 		})
@@ -445,7 +446,7 @@ func TestHandleDelivery_NonRetryableErrorRejects(t *testing.T) {
 	repo := newFakeRepo()
 	w := NewWorker(repo, newFakeStorage(), pub, testLogger())
 
-	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, []byte("not json")),
+	w.handleDelivery(context.Background(), delivery(ack, "m1", nil, []byte("not json")), messaging.UploadQueue,
 		func(_ context.Context, d amqp.Delivery) error {
 			return errors.New("unmarshal failed")
 		})

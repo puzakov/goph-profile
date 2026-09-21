@@ -22,6 +22,17 @@ type Config struct {
 	StaticDir   string // каталог со статическими файлами веб-интерфейса
 	RabbitMQURL string // адрес брокера сообщений RabbitMQ
 	Storage     StorageConfig
+
+	// Наблюдаемость.
+	LogLevel     string // уровень логирования: debug, info, warn, error
+	LogFormat    string // формат логов: json или text
+	OTLPEndpoint string // URL OTLP/HTTP-коллектора; пусто — трейсинг выключен
+	MetricsAddr  string // адрес /metrics воркера (сервер отдаёт метрики на HTTPAddr)
+
+	// RabbitMQ Management API — источник метрик очередей.
+	RabbitMQManagementURL      string
+	RabbitMQManagementUser     string
+	RabbitMQManagementPassword string
 }
 
 // StorageConfig — настройки S3-совместимого хранилища.
@@ -53,6 +64,14 @@ func Load() (*Config, error) {
 			Region:    getenv("S3_REGION", "us-east-1"),
 			UseSSL:    getenvBool("S3_USE_SSL", false),
 		},
+		LogLevel:     getenv("LOG_LEVEL", "info"),
+		LogFormat:    getenv("LOG_FORMAT", "json"),
+		OTLPEndpoint: getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		MetricsAddr:  getenv("METRICS_ADDR", ":9091"),
+		// Пустой RABBITMQ_MANAGEMENT_URL выключает сбор метрик очередей.
+		RabbitMQManagementURL:      getenv("RABBITMQ_MANAGEMENT_URL", ""),
+		RabbitMQManagementUser:     getenv("RABBITMQ_MANAGEMENT_USER", "guest"),
+		RabbitMQManagementPassword: getenv("RABBITMQ_MANAGEMENT_PASSWORD", "guest"),
 	}, nil
 }
 

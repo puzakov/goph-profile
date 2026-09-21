@@ -9,7 +9,15 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"goph-profile/internal/telemetry"
 )
+
+// tracer — инструмент создания спанов обращений к хранилищу.
+var tracer = otel.Tracer("avatar-storage")
 
 // ErrObjectNotFound — объект не найден в хранилище.
 var ErrObjectNotFound = errors.New("object not found")
@@ -50,7 +58,10 @@ func NewMinioStorage(endpoint, accessKey, secretKey, bucket, region string, useS
 }
 
 // EnsureBucket создаёт бакет, если его ещё нет. Идемпотентна.
-func (s *minioStorage) EnsureBucket(ctx context.Context) error {
+func (s *minioStorage) EnsureBucket(ctx context.Context) (err error) {
+	ctx, span := tracer.Start(ctx, "s3.ensure_bucket", trace.WithAttributes(s.spanAttrs("")...))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	exists, err := s.client.BucketExists(ctx, s.bucket)
 	if err != nil {
 		return fmt.Errorf("check bucket %s: %w", s.bucket, err)
@@ -64,8 +75,12 @@ func (s *minioStorage) EnsureBucket(ctx context.Context) error {
 	return nil
 }
 
-func (s *minioStorage) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
-	_, err := s.client.PutObject(ctx, s.bucket, key, r, size,
+func (s *minioStorage) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) (err error) {
+	ctx, span := tracer.Start(ctx, "s3.put", trace.WithAttributes(
+		append(s.spanAttrs(key), attribute.Int64("s3.size", size))...))
+	defer func() { telemetry.EndSpan(span, err) }()
+
+	_, err = s.client.PutObject(ctx, s.bucket, key, r, size,
 		minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		return fmt.Errorf("put object %s: %w", key, err)
@@ -73,7 +88,10 @@ func (s *minioStorage) Put(ctx context.Context, key string, r io.Reader, size in
 	return nil
 }
 
-func (s *minioStorage) Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {
+func (s *minioStorage) Get(ctx context.Context, key string) (rc io.ReadCloser, info ObjectInfo, err error) {
+	ctx, span := tracer.Start(ctx, "s3.get", trace.WithAttributes(s.spanAttrs(key)...))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, ObjectInfo{}, mapMinioError(err)
@@ -83,20 +101,36 @@ func (s *minioStorage) Get(ctx context.Context, key string) (io.ReadCloser, Obje
 		_ = obj.Close()
 		return nil, ObjectInfo{}, mapMinioError(err)
 	}
+	span.SetAttributes(attribute.Int64("s3.size", stat.Size))
 	return obj, ObjectInfo{ETag: stat.ETag, Size: stat.Size, ContentType: stat.ContentType}, nil
 }
 
-func (s *minioStorage) Delete(ctx context.Context, key string) error {
-	err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
-	if err != nil {
+func (s *minioStorage) Delete(ctx context.Context, key string) (err error) {
+	ctx, span := tracer.Start(ctx, "s3.delete", trace.WithAttributes(s.spanAttrs(key)...))
+	defer func() { telemetry.EndSpan(span, err) }()
+
+	if err = s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
 		return mapMinioError(err)
 	}
 	return nil
 }
 
-func (s *minioStorage) Ping(ctx context.Context) error {
-	_, err := s.client.BucketExists(ctx, s.bucket)
+func (s *minioStorage) Ping(ctx context.Context) (err error) {
+	ctx, span := tracer.Start(ctx, "s3.ping", trace.WithAttributes(s.spanAttrs("")...))
+	defer func() { telemetry.EndSpan(span, err) }()
+
+	_, err = s.client.BucketExists(ctx, s.bucket)
 	return err
+}
+
+// spanAttrs — атрибуты спана с бакетом и ключом объекта.
+// Пустой ключ означает операцию над бакетом целиком.
+func (s *minioStorage) spanAttrs(key string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{attribute.String("s3.bucket", s.bucket)}
+	if key != "" {
+		attrs = append(attrs, attribute.String("s3.key", key))
+	}
+	return attrs
 }
 
 // mapMinioError преобразует ошибки MinIO в ошибки пакета.

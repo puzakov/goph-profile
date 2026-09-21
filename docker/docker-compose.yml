@@ -60,6 +60,10 @@ services:
       S3_BUCKET: avatars
       S3_REGION: us-east-1
       S3_USE_SSL: "false"
+      # Наблюдаемость: логи, трейсинг, метрики на /metrics.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +88,14 @@ services:
       S3_BUCKET: avatars
       S3_REGION: us-east-1
       S3_USE_SSL: "false"
+      # Наблюдаемость: логи, трейсинг, метрики на отдельном порту.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      METRICS_ADDR: ":9091"
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      RABBITMQ_MANAGEMENT_USER: guest
+      RABBITMQ_MANAGEMENT_PASSWORD: guest
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,7 +103,15 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    ports:
+      - "9091:9091"   # /metrics воркера
 
 volumes:
   pgdata:
   miniodata:
+
+# Общая сеть с мониторинг-стендом (docker/docker-compose.monitoring.yml):
+# Prometheus и Jaeger обращаются к сервисам по именам контейнеров.
+networks:
+  default:
+    name: goph_default
