@@ -11,13 +11,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"goph-profile/internal/metrics"
+	"goph-profile/internal/metricstest"
 	"goph-profile/internal/telemetry"
 )
 
@@ -31,8 +32,8 @@ const (
 )
 
 // newTracedRouter собирает роутер с той же цепочкой middleware, что и
-// боевой, и возвращает буфер логов и записанные спаны.
-func newTracedRouter(t *testing.T) (http.Handler, *bytes.Buffer, *tracetest.SpanRecorder) {
+// боевой, и возвращает буфер логов, записанные спаны и реестр метрик.
+func newTracedRouter(t *testing.T) (http.Handler, *bytes.Buffer, *tracetest.SpanRecorder, *prometheus.Registry) {
 	t.Helper()
 
 	// Нужен работающий провайдер: с no-op трейсером SpanContext невалиден
@@ -56,18 +57,22 @@ func newTracedRouter(t *testing.T) (http.Handler, *bytes.Buffer, *tracetest.Span
 	logBuf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(logBuf, nil))
 
+	// Реестр создаётся на тест: метрики изолированы, значения точные.
+	registry := metrics.NewRegistry()
+	appMetrics := metrics.New(registry)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(Tracing())
-	r.Use(RequestLogger(log))
+	r.Use(RequestLogger(log, appMetrics))
 	r.Get(testRoute, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	return r, logBuf, recorder
+	return r, logBuf, recorder, registry
 }
 
 func TestRequestLogger_PutsTraceIDFromHeaderInLog(t *testing.T) {
-	router, logBuf, _ := newTracedRouter(t)
+	router, logBuf, _, _ := newTracedRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/42", nil)
 	req.Header.Set("traceparent", testTraceparent)
@@ -87,7 +92,7 @@ func TestRequestLogger_PutsTraceIDFromHeaderInLog(t *testing.T) {
 // Шаблон маршрута chi не попадает в http.Request.Pattern, поэтому otelhttp
 // не может вывести http.route сам — его проставляет RequestLogger.
 func TestRequestLogger_SetsRouteOnSpan(t *testing.T) {
-	router, _, recorder := newTracedRouter(t)
+	router, _, recorder, _ := newTracedRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/42", nil)
 	router.ServeHTTP(httptest.NewRecorder(), req)
@@ -105,19 +110,20 @@ func TestRequestLogger_SetsRouteOnSpan(t *testing.T) {
 }
 
 func TestRequestLogger_RecordsRedMetrics(t *testing.T) {
-	router, _, _ := newTracedRouter(t)
-
-	counter := metrics.HTTPRequestsTotal.WithLabelValues(http.MethodGet, testRoute, "200")
-	before := testutil.ToFloat64(counter)
+	router, _, _, registry := newTracedRouter(t)
 
 	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/avatars/42", nil))
 
-	require.Equal(t, before+1, testutil.ToFloat64(counter))
+	// Реестр свой у каждого теста: сравнивать дельты не нужно.
+	require.Equal(t, float64(1),
+		metricstest.Values(t, registry)["avatars_http_requests_total_GET_"+testRoute+"_200"])
+	require.Equal(t, uint64(1),
+		metricstest.HistogramSamples(t, registry)["avatars_http_request_duration_seconds_GET_"+testRoute+"_200"])
 }
 
 // Незаматченный путь не должен раздувать кардинальность метки route.
 func TestRequestLogger_UnmatchedPathUsesPlaceholder(t *testing.T) {
-	router, logBuf, _ := newTracedRouter(t)
+	router, logBuf, _, _ := newTracedRouter(t)
 
 	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nope", nil))
 

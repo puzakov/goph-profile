@@ -15,7 +15,7 @@ import (
 
 // RequestLogger логирует каждый HTTP-запрос: метод, путь, статус, длительность,
 // идентификаторы трейса и спана — и фиксирует RED-метрики запроса.
-func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
+func RequestLogger(log *slog.Logger, m *metrics.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -44,7 +44,7 @@ func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 				telemetry.SpanIDAttr(r.Context()),
 			)
 
-			metrics.ObserveHTTP(r.Method, route, ww.Status(), duration)
+			m.ObserveHTTP(r.Method, route, ww.Status(), duration)
 		})
 	}
 }

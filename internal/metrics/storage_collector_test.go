@@ -3,63 +3,16 @@ package metrics_test
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"goph-profile/internal/metrics"
 )
-
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// gather собирает метрики коллекторов в отдельном реестре: глобальный реестр
-// между тестами не разделяется, локальный даёт изолированные значения.
-// Ключ — имя метрики с значениями меток через подчёркивание.
-func gather(t *testing.T, collectors ...prometheus.Collector) map[string]float64 {
-	t.Helper()
-	reg := prometheus.NewRegistry()
-	for _, c := range collectors {
-		require.NoError(t, reg.Register(c))
-	}
-	families, err := reg.Gather()
-	require.NoError(t, err)
-
-	values := map[string]float64{}
-	for _, f := range families {
-		for _, m := range f.GetMetric() {
-			key := f.GetName()
-			for _, l := range m.GetLabel() {
-				key += "_" + l.GetValue()
-			}
-			values[key] = metricValue(m)
-		}
-	}
-	return values
-}
-
-// metricValue читает значение метрики любого типа.
-func metricValue(m *dto.Metric) float64 {
-	switch {
-	case m.GetGauge() != nil:
-		return m.GetGauge().GetValue()
-	case m.GetCounter() != nil:
-		return m.GetCounter().GetValue()
-	case m.GetUntyped() != nil:
-		return m.GetUntyped().GetValue()
-	default:
-		return 0
-	}
-}
 
 // fakeQueryer — заглушка пула: считает обращения к БД и отдаёт заданный
 // агрегат. Счётчик нужен, чтобы проверить кэш: пока снимок свежий,

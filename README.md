@@ -135,6 +135,12 @@ curl -X POST http://localhost:8080/api/v1/avatars -H "X-User-ID: user-1" -F "ima
 `StorageCacheTTL` (минута), поэтому при недоступной БД отдаётся последний
 удачный снимок, а не пустая метрика.
 
+Реестр Prometheus создаётся в `main` и передаётся явно (`metrics.NewRegistry()`
+→ `metrics.New(reg)`): глобального реестра сервис не использует. Поэтому
+коллекторы и метрики процесса регистрирует вызывающая сторона, а тесты
+работают с собственным реестром и проверяют точные значения, а не дельты
+(помощники — `internal/metricstest`).
+
 ### Логи
 
 JSON в stdout: `time`, `level`, `msg`, `trace_id`, `span_id` плюс поля запроса
@@ -201,6 +207,7 @@ make migrate-status    # статус миграций
 │   ├── imaging/       # утилиты работы с изображениями (crop/resize/JPEG)
 │   ├── messaging/     # RabbitMQ: publisher, топология, retry-политика, propagation трейса
 │   ├── metrics/       # метрики Prometheus и коллекторы (пул БД, S3, очереди)
+│   ├── metricstest/   # чтение метрик из реестра в тестах
 │   ├── repository/    # PostgreSQL: метаданные, event_dedup
 │   ├── services/      # бизнес-логика
 │   ├── storage/       # S3-совместимое хранилище (MinIO)

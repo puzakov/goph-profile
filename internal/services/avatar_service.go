@@ -65,16 +65,17 @@ type AvatarService struct {
 	repo      repository.AvatarRepository
 	storage   storage.AvatarStorage
 	publisher messaging.EventPublisher // может быть nil: публикация пропускается
+	metrics   *metrics.Metrics
 	log       *slog.Logger
 }
 
 // NewAvatarService создаёт сервис с заданными зависимостями.
 func NewAvatarService(repo repository.AvatarRepository, st storage.AvatarStorage,
-	publisher messaging.EventPublisher, log *slog.Logger) *AvatarService {
+	publisher messaging.EventPublisher, m *metrics.Metrics, log *slog.Logger) *AvatarService {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &AvatarService{repo: repo, storage: st, publisher: publisher, log: log}
+	return &AvatarService{repo: repo, storage: st, publisher: publisher, metrics: m, log: log}
 }
 
 // Upload сохраняет аватарку: файл — в S3, метаданные — в PostgreSQL,
@@ -93,7 +94,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 		if err != nil {
 			status = metrics.StatusError
 		}
-		metrics.ObserveUpload(status, time.Since(start))
+		s.metrics.ObserveUpload(status, time.Since(start))
 	}()
 
 	// Ограничиваем чтение, чтобы не съесть всю память: файл больше лимита считаем ошибкой.

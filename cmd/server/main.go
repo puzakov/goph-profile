@@ -14,7 +14,6 @@ import (
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"goph-profile/internal/config"
 	"goph-profile/internal/db/migrations"
@@ -63,6 +62,11 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("init tracer provider: %w", err)
 	}
+
+	// Метрики: реестр создаётся здесь и передаётся явно — глобального
+	// реестра Prometheus сервис не использует.
+	registry := metrics.NewRegistry()
+	appMetrics := metrics.New(registry)
 	defer func() {
 		// Остановка провайдера сбрасывает буфер спанов в коллектор.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -89,7 +93,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	// Метрики процесса: состояние своего пула соединений. Объём данных в
 	// хранилище отдаёт только воркер — значение не зависит от процесса,
 	// а два источника одного gauge дали бы двойной счёт в sum().
-	prometheus.MustRegister(metrics.NewPGXPoolCollector(pool))
+	registry.MustRegister(metrics.NewPGXPoolCollector(pool))
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -122,11 +126,11 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	}
 	defer func() { _ = publisher.Close() }()
 
-	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, log)
+	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, appMetrics, log)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handlers.NewRouter(svc, cfg.StaticDir, log),
+		Handler:           handlers.NewRouter(svc, cfg.StaticDir, appMetrics, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

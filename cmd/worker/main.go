@@ -97,7 +97,10 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	}
 	defer pool.Close()
 
-	registerMetrics(pool, cfg, log)
+	// Метрики: реестр создаётся здесь и передаётся явно — глобального
+	// реестра Prometheus сервис не использует.
+	registry := metrics.NewRegistry()
+	registerMetrics(registry, pool, cfg, log)
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -132,7 +135,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 
 	// /metrics на отдельном порту: Prometheus опрашивает его независимо
 	// от обработки сообщений.
-	metricsSrv := startMetricsServer(cfg.MetricsAddr, log)
+	metricsSrv := startMetricsServer(registry, cfg.MetricsAddr, log)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -148,9 +151,9 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	return w.Run(ctx, cfg.RabbitMQURL)
 }
 
-// registerMetrics регистрирует коллекторы метрик воркера.
-func registerMetrics(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) {
-	prometheus.MustRegister(
+// registerMetrics регистрирует коллекторы метрик воркера в реестре.
+func registerMetrics(registry *prometheus.Registry, pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) {
+	registry.MustRegister(
 		metrics.NewPGXPoolCollector(pool),
 		// Агрегат по таблице считается не чаще TTL, а не на каждый scrape.
 		metrics.NewStorageCollector(pool, metrics.StorageCacheTTL, log),
@@ -158,7 +161,7 @@ func registerMetrics(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) {
 	// Глубина очередей: коллектор включается только при заданном адресе
 	// Management API — иначе учётные данные брокера не нужны вовсе.
 	if cfg.RabbitMQManagementURL != "" {
-		prometheus.MustRegister(metrics.NewQueueCollector(
+		registry.MustRegister(metrics.NewQueueCollector(
 			cfg.RabbitMQManagementURL,
 			cfg.RabbitMQManagementUser,
 			cfg.RabbitMQManagementPassword,
@@ -168,9 +171,9 @@ func registerMetrics(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) {
 }
 
 // startMetricsServer поднимает HTTP-сервер с /metrics.
-func startMetricsServer(addr string, log *slog.Logger) *http.Server {
+func startMetricsServer(registry *prometheus.Registry, addr string, log *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	srv := &http.Server{
 		Addr:              addr,
