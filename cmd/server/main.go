@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -18,20 +19,32 @@ import (
 	"goph-profile/internal/db/migrations"
 	"goph-profile/internal/handlers"
 	"goph-profile/internal/messaging"
+	"goph-profile/internal/metrics"
 	"goph-profile/internal/repository"
 	"goph-profile/internal/services"
 	"goph-profile/internal/storage"
+	"goph-profile/internal/telemetry"
 )
 
 func main() {
+	// Настройки загружаются первыми: формат и уровень логов заданы в них,
+	// а на ошибке конфигурации логгер ещё не сконфигурирован.
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	slog.SetDefault(log)
 
 	cfg, err := config.Load()
 	if err != nil {
 		log.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
+
+	configured, err := telemetry.NewLogger(os.Stdout, cfg.LogLevel, cfg.LogFormat)
+	if err != nil {
+		log.Error("invalid logger configuration", "error", err)
+		os.Exit(1)
+	}
+	log = configured
+	slog.SetDefault(log)
+
 	if err := run(log, cfg); err != nil {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
@@ -42,12 +55,42 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// PostgreSQL.
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	shutdownTracer, err := telemetry.InitTracerProvider(ctx, cfg.OTLPEndpoint, telemetry.ServiceServer)
+	if err != nil {
+		return fmt.Errorf("init tracer provider: %w", err)
+	}
+
+	// Метрики: реестр создаётся здесь и передаётся явно — глобального
+	// реестра Prometheus сервис не использует.
+	registry := metrics.NewRegistry()
+	appMetrics := metrics.New(registry)
+	defer func() {
+		// Остановка провайдера сбрасывает буфер спанов в коллектор.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracer(shutdownCtx); err != nil {
+			log.Error("shutdown tracer provider", "error", err)
+		}
+	}()
+
+	// PostgreSQL: каждый запрос — спан в текущем трейсе.
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("parse database url: %w", err)
+	}
+	// Имя SQL-спана усечено до операции (INSERT/UPDATE/...): параметры
+	// и значения в трейс не попадают.
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("connect to postgres: %w", err)
 	}
 	defer pool.Close()
+
+	// Метрики процесса: состояние своего пула соединений. Объём данных в
+	// хранилище отдаёт только воркер — значение не зависит от процесса,
+	// а два источника одного gauge дали бы двойной счёт в sum().
+	registry.MustRegister(metrics.NewPGXPoolCollector(pool))
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -80,11 +123,11 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	}
 	defer func() { _ = publisher.Close() }()
 
-	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, log)
+	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, appMetrics, log)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handlers.NewRouter(svc, cfg.StaticDir, log),
+		Handler:           handlers.NewRouter(svc, cfg.StaticDir, appMetrics, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

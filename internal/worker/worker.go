@@ -13,13 +13,22 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"goph-profile/internal/domain"
 	"goph-profile/internal/imaging"
 	"goph-profile/internal/messaging"
 	"goph-profile/internal/repository"
 	"goph-profile/internal/storage"
+	"goph-profile/internal/telemetry"
 )
+
+// tracer — инструмент создания спанов обработки сообщений: имя то же, что
+// у сервиса в ресурсе трейсов, иначе спаны одного процесса выглядели бы
+// как спаны разных сервисов.
+var tracer = otel.Tracer(telemetry.ServiceWorker)
 
 // jpegQuality — качество кодирования миниатюр JPEG.
 const jpegQuality = 85
@@ -120,9 +129,7 @@ func (w *Worker) consumeQueue(ctx context.Context, ch *amqp.Channel, queue strin
 			if !ok {
 				return fmt.Errorf("delivery channel closed for %s", queue)
 			}
-			w.log.Info("message received",
-				"queue", queue, "message_id", d.MessageId, "redelivered", d.Redelivered)
-			w.handleDelivery(ctx, d, handler)
+			w.handleDelivery(ctx, d, queue, handler)
 		}
 	}
 }
@@ -130,7 +137,7 @@ func (w *Worker) consumeQueue(ctx context.Context, ch *amqp.Channel, queue strin
 // handleDelivery обрабатывает одно сообщение: при retryable-ошибке публикует
 // его в retry-обменник с экспоненциальной задержкой, при исчерпании попыток
 // отправляет в dead-letter и помечает аватарку failed.
-func (w *Worker) handleDelivery(ctx context.Context, d amqp.Delivery,
+func (w *Worker) handleDelivery(ctx context.Context, d amqp.Delivery, queue string,
 	handler func(context.Context, amqp.Delivery) error) {
 	// Уникальный идентификатор сообщения нужен для идемпотентной обработки.
 	msgID := d.MessageId
@@ -140,7 +147,23 @@ func (w *Worker) handleDelivery(ctx context.Context, d amqp.Delivery,
 	}
 	d.MessageId = msgID
 
-	err := handler(ctx, d)
+	// Продолжаем трейс издателя: его контекст пришёл в заголовках сообщения.
+	ctx, span := tracer.Start(messaging.ExtractTraceContext(ctx, d.Headers), "consume_message",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			semconv.MessagingSystemRabbitMQ,
+			semconv.MessagingDestinationName(queue),
+			semconv.MessagingRabbitMQDestinationRoutingKey(d.RoutingKey),
+			semconv.MessagingMessageID(msgID),
+		))
+	var err error
+	defer func() { telemetry.EndSpan(span, err) }()
+
+	w.log.Info("message received",
+		"queue", queue, "message_id", msgID, "redelivered", d.Redelivered,
+		telemetry.TraceIDAttr(ctx))
+
+	err = handler(ctx, d)
 	if err == nil {
 		_ = d.Ack(false)
 		return
@@ -153,17 +176,19 @@ func (w *Worker) handleDelivery(ctx context.Context, d amqp.Delivery,
 			pubErr := w.publisher.RetryPublish(ctx, d.RoutingKey, d.Body, msgID, retryCount)
 			if pubErr == nil {
 				w.log.Warn("retry scheduled",
-					"queue", d.RoutingKey, "attempt", retryCount+1, "error", err)
+					"queue", d.RoutingKey, "attempt", retryCount+1, "error", err,
+					telemetry.TraceIDAttr(ctx))
 				_ = d.Ack(false)
 				return
 			}
-			w.log.Error("retry publish failed", "error", pubErr)
+			w.log.Error("retry publish failed", "error", pubErr, telemetry.TraceIDAttr(ctx))
 		}
 	}
 
 	// Попытки исчерпаны (или сообщение некорректно): отправляем в dead-letter.
 	w.log.Error("message dead-lettered",
-		"queue", d.RoutingKey, "message_id", msgID, "error", err)
+		"queue", d.RoutingKey, "message_id", msgID, "error", err,
+		telemetry.TraceIDAttr(ctx))
 	_ = d.Reject(false)
 	if he != nil && he.avatarID != "" {
 		if err := w.repo.UpdateStatus(ctx, he.avatarID, domain.StatusFailed); err != nil {

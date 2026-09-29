@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
@@ -33,6 +34,8 @@ import (
 	"goph-profile/internal/db/migrations"
 	"goph-profile/internal/handlers"
 	"goph-profile/internal/messaging"
+	"goph-profile/internal/metrics"
+	"goph-profile/internal/metricstest"
 	"goph-profile/internal/repository"
 	"goph-profile/internal/services"
 	"goph-profile/internal/storage"
@@ -56,6 +59,7 @@ type FlowSuite struct {
 	storage   storage.AvatarStorage
 	publisher *messaging.RabbitPublisher
 	server    *httptest.Server
+	registry  *prometheus.Registry
 	cancel    context.CancelFunc
 }
 
@@ -142,8 +146,12 @@ func (s *FlowSuite) SetupSuite() {
 	}()
 
 	// --- HTTP-сервер ---
-	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, log)
-	s.server = httptest.NewServer(handlers.NewRouter(svc, "../../web/static", log))
+	// Реестр метрик создаётся явно: /metrics отдаёт его, тесты читают из него
+	// значения после реальных запросов.
+	s.registry = metrics.NewRegistry()
+	appMetrics := metrics.New(s.registry)
+	svc := services.NewAvatarService(repository.NewAvatarRepository(pool, log), st, publisher, appMetrics, log)
+	s.server = httptest.NewServer(handlers.NewRouter(svc, "../../web/static", appMetrics, log))
 }
 
 func (s *FlowSuite) TearDownSuite() {
@@ -408,4 +416,24 @@ func (s *FlowSuite) TestHealth_OK() {
 	require.Equal(t, "ok", payload.Status)
 	require.Equal(t, "ok", payload.Components["database"])
 	require.Equal(t, "ok", payload.Components["storage"])
+}
+
+// /metrics отдаёт реестр процесса: запросы, прошедшие через сервер, видны
+// в нём вместе со стандартными метриками рантайма.
+func (s *FlowSuite) TestMetrics_ExposesRecordedValues() {
+	t := s.T()
+
+	health, err := http.Get(s.server.URL + "/health")
+	require.NoError(t, err)
+	_ = health.Body.Close()
+
+	resp, err := http.Get(s.server.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	values := metricstest.Values(t, s.registry)
+	// Метка route — шаблон маршрута, а не путь запроса.
+	require.Greater(t, values["avatars_http_requests_total_GET_/health_200"], float64(0))
+	require.Contains(t, values, "go_goroutines")
 }

@@ -1,6 +1,7 @@
 # Основные команды разработки GophProfile.
 
-.PHONY: build test test-cover lint test-integration compose-up compose-down compose-clean
+.PHONY: build test test-cover lint test-integration compose-up compose-down compose-clean \
+	compose-up-monitoring compose-down-monitoring
 
 # Сборка всех бинарников (server, worker).
 build:
@@ -51,3 +52,14 @@ compose-down:
 # Остановить стенд и удалить данные (volumes).
 compose-clean:
 	docker compose -f docker/docker-compose.yml down -v
+
+# Мониторинг: Prometheus + Jaeger + Grafana + Loki + Alertmanager.
+# Запускать вторым: сеть goph_default создаёт основной compose.
+# Перед первым запуском: cp docker/.env.example docker/.env и задать
+# GRAFANA_PASSWORD — дефолтной пары admin/admin у стенда нет.
+compose-up-monitoring:
+	docker compose -f docker/docker-compose.monitoring.yml up -d
+
+# Остановить мониторинг (данные в volumes сохраняются).
+compose-down-monitoring:
+	docker compose -f docker/docker-compose.monitoring.yml down

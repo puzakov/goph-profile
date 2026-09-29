@@ -11,9 +11,17 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"goph-profile/internal/domain"
+	"goph-profile/internal/telemetry"
 )
+
+// tracer — инструмент создания спанов публикации событий.
+var tracer = otel.Tracer("avatar-publisher")
 
 // Имена обменников и очередей.
 const (
@@ -99,11 +107,23 @@ func (p *RabbitPublisher) PublishDelete(ctx context.Context, event domain.Avatar
 	return p.publish(ctx, domain.RoutingKeyDelete, event)
 }
 
-func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event any) error {
+func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event any) (err error) {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
+
+	messageID := newMessageID()
+	ctx, span := tracer.Start(ctx, "rabbitmq.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemRabbitMQ,
+			semconv.MessagingDestinationName(ExchangeName),
+			semconv.MessagingRabbitMQDestinationRoutingKey(routingKey),
+			semconv.MessagingMessageID(messageID),
+		))
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ch.PublishWithContext(ctx,
@@ -114,9 +134,11 @@ func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event 
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
-			MessageId:    newMessageID(),
+			MessageId:    messageID,
 			Timestamp:    time.Now(),
-			Body:         body,
+			// Заголовки несут traceparent: воркер продолжит тот же трейс.
+			Headers: injectTraceContext(ctx),
+			Body:    body,
 		})
 }
 
@@ -126,11 +148,32 @@ func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event 
 // что после успешной обработки повторное появление события будет пропущено.
 // Счётчик попыток x-retry-count увеличивается: когда он достигает лимита,
 // RetryDelay возвращает ok=false и сообщение уходит в dead-letter.
-func (p *RabbitPublisher) RetryPublish(ctx context.Context, routingKey string, body []byte, messageID string, retryCount int) error {
+func (p *RabbitPublisher) RetryPublish(ctx context.Context, routingKey string, body []byte, messageID string, retryCount int) (err error) {
 	delay, ok := RetryDelay(retryCount)
 	if !ok {
 		return fmt.Errorf("retry count %d exceeded", retryCount)
 	}
+
+	// Спан публикации: повтор — отдельная операция в трейсе, но связана
+	// с исходным сообщением общим message_id.
+	ctx, span := tracer.Start(ctx, "rabbitmq.publish_retry",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemRabbitMQ,
+			semconv.MessagingDestinationName(RetryExchange),
+			semconv.MessagingRabbitMQDestinationRoutingKey(routingKey),
+			semconv.MessagingMessageID(messageID),
+			attribute.Int("retry_count", retryCount),
+		))
+	defer func() { telemetry.EndSpan(span, err) }()
+
+	// Заголовки события (traceparent) дополняются счётчиком попыток.
+	headers := injectTraceContext(ctx)
+	if headers == nil {
+		headers = amqp.Table{}
+	}
+	headers[headerRetryCount] = int32(retryCount + 1)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ch.PublishWithContext(ctx,
@@ -143,7 +186,7 @@ func (p *RabbitPublisher) RetryPublish(ctx context.Context, routingKey string, b
 			DeliveryMode: amqp.Persistent,
 			MessageId:    messageID,
 			Expiration:   fmt.Sprintf("%d", delay.Milliseconds()),
-			Headers:      amqp.Table{headerRetryCount: int32(retryCount + 1)},
+			Headers:      headers,
 			Body:         body,
 		})
 }

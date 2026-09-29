@@ -7,19 +7,27 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"goph-profile/internal/metrics"
 )
 
 // NewRouter собирает HTTP-роутер: REST API, healthcheck и веб-интерфейс.
-func NewRouter(svc AvatarService, staticDir string, log *slog.Logger) http.Handler {
+func NewRouter(svc AvatarService, staticDir string, m *metrics.Metrics, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(RequestLogger(log))
+	// Tracing снаружи RequestLogger: логгер и хендлеры должны видеть спан
+	// в контексте запроса, чтобы писать trace_id.
+	r.Use(Tracing())
+	r.Use(RequestLogger(log, m))
 	r.Use(middleware.Recoverer)
 
 	api := NewAvatarHandler(svc, log)
 
 	// Healthcheck.
 	r.Get("/health", api.Health)
+
+	// Метрики: регистрируются до статики, иначе FileServer перехватит путь.
+	r.Handle("/metrics", m.Handler())
 
 	// REST API.
 	r.Route("/api/v1", func(r chi.Router) {

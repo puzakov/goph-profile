@@ -15,6 +15,8 @@ import (
 
 	"goph-profile/internal/domain"
 	"goph-profile/internal/messaging"
+	"goph-profile/internal/metrics"
+	"goph-profile/internal/metricstest"
 	"goph-profile/internal/storage"
 )
 
@@ -141,7 +143,13 @@ func newService(repo *fakeRepo, st *fakeStorage, pub *fakePublisher) *AvatarServ
 	if pub != nil {
 		publisher = pub
 	}
-	return NewAvatarService(repo, st, publisher, testLogger())
+	return NewAvatarService(repo, st, publisher, newMetrics(), testLogger())
+}
+
+// newMetrics — метрики с собственным реестром: тесты не делят состояние,
+// поэтому значения метрик проверяются точно.
+func newMetrics() *metrics.Metrics {
+	return metrics.New(metrics.NewRegistry())
 }
 
 // ---- тесты ----
@@ -193,6 +201,25 @@ func TestUpload_SuccessPublishesEventWithPendingStatus(t *testing.T) {
 	require.Equal(t, domain.AvatarUploadEvent{
 		AvatarID: avatar.ID, UserID: "user-1", S3Key: avatar.S3Key,
 	}, pub.uploads[0])
+}
+
+// Бизнес-метрики ТЗ: число загрузок по статусу и длительность операции.
+func TestUpload_RecordsBusinessMetrics(t *testing.T) {
+	registry := metrics.NewRegistry()
+	svc := NewAvatarService(&fakeRepo{}, &fakeStorage{}, nil, metrics.New(registry), testLogger())
+
+	_, err := svc.Upload(context.Background(), "user-1", "photo.png", bytes.NewReader(png1x1))
+	require.NoError(t, err)
+	_, err = svc.Upload(context.Background(), "user-1", "file.txt", strings.NewReader("не картинка"))
+	require.ErrorIs(t, err, domain.ErrInvalidFormat)
+
+	values := metricstest.Values(t, registry)
+	require.Equal(t, float64(1), values["avatars_uploads_total_ok"])
+	require.Equal(t, float64(1), values["avatars_uploads_total_error"])
+	require.Equal(t, uint64(2),
+		metricstest.HistogramSamples(t, registry)["avatars_upload_duration_seconds_ok"]+
+			metricstest.HistogramSamples(t, registry)["avatars_upload_duration_seconds_error"],
+		"длительность фиксируется и для успешных, и для неуспешных загрузок")
 }
 
 func TestUpload_WorksWithoutPublisher(t *testing.T) {

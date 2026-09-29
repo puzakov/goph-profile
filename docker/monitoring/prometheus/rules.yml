@@ -1,0 +1,33 @@
+# Правила алертинга GophProfile.
+groups:
+  - name: avatars
+    rules:
+      # Доля неуспешных загрузок аватарок выше 10% в течение 5 минут.
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(avatars_uploads_total{status="error"}[5m]))
+            / sum(rate(avatars_uploads_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая доля ошибок загрузки аватарок"
+          description: >-
+            Доля ошибок загрузки превышает 10% (текущее значение
+            {{ $value | humanizePercentage }}) в течение 5 минут.
+
+      # 95-й процентиль длительности загрузки выше 5 секунд.
+      # Запись через _bucket и rate by (le) — рабочая форма
+      # histogram_quantile: без неё функция не видит гистограмму.
+      - alert: HighResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(avatars_upload_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Высокое время ответа загрузки аватарок"
+          description: >-
+            95-й процентиль длительности загрузки превышает 5 секунд
+            (текущее значение {{ $value | humanizeDuration }}) в течение 2 минут.

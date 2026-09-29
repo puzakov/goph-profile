@@ -1,0 +1,22 @@
+# Конфигурация Alertmanager стенда GophProfile.
+#
+# Учебный стенд не имеет внешнего приёмника уведомлений: алерты принимаются
+# и видны в UI (http://localhost:9093) и в панели «Активные алерты» дашборда
+# Service overview. Чтобы отправлять их наружу, добавьте в receiver,
+# например, webhook или email:
+#
+#   receivers:
+#     - name: default
+#       webhook_configs:
+#         - url: http://my-webhook:8080/alerts
+#
+route:
+  receiver: default
+  # Алерты одного имени группируются в одно уведомление.
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 3h
+
+receivers:
+  - name: default

@@ -1,0 +1,46 @@
+# Promtail собирает логи контейнеров стенда через docker-сокет:
+# сервисы приложений не нужно переключать на логирующий драйвер Loki.
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Имя контейнера без ведущего слэша.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      # Только контейнеры стенда: имя проекта compose — это имя каталога
+      # с compose-файлом. При запуске с другим -p поправьте regex.
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        regex: "docker|goph-profile"
+        action: keep
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
+    pipeline_stages:
+      - docker: {}
+      # Логи сервисов — JSON: поля остаются в записи, меткой становится
+      # только level. trace_id в метку не выносим — высокая кардинальность.
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            trace_id: trace_id
+            span_id: span_id
+            time: time
+      - labels:
+          level:
+      - timestamp:
+          source: time
+          format: RFC3339Nano

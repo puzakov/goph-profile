@@ -20,6 +20,7 @@ WORKDIR /app
 COPY --from=builder /out/ /usr/local/bin/
 COPY web/ /app/web/
 
-EXPOSE 8080
+# 8080 — HTTP API сервера, 9091 — /metrics воркера.
+EXPOSE 8080 9091
 
 CMD ["server"]
