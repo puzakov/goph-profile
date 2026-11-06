@@ -1,0 +1,38 @@
+{{- if .Values.server.hpa.enabled }}
+# Требуется metrics-server: без него HPA не получает метрик, и в колонке
+# TARGETS будет <unknown>.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "goph-profile.componentName" (dict "root" . "component" "server") }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "server") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "goph-profile.componentName" (dict "root" . "component" "server") }}
+  minReplicas: {{ .Values.server.hpa.minReplicas }}
+  maxReplicas: {{ .Values.server.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.hpa.cpuUtilization }}
+    # Метрика памяти шумная: сборщик мусора Go возвращает память рывками,
+    # а разбор изображений держит буферы до конца запроса. На реальной
+    # нагрузке этот таргет заменяют на RPS или длину очереди.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.hpa.memoryUtilization }}
+  behavior:
+    scaleDown:
+      # Без окна стабилизации поды уходят и возвращаются на каждом всплеске,
+      # а загрузка аватарки — редкое тяжёлое событие.
+      stabilizationWindowSeconds: {{ .Values.server.hpa.scaleDownStabilizationSeconds }}
+{{- end }}

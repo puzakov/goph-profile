@@ -1,0 +1,79 @@
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "server") }}
+# HTTP-сервер: REST API и веб-интерфейс.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "server") | nindent 4 }}
+spec:
+  {{- if not .Values.server.hpa.enabled }}
+  replicas: {{ .Values.server.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "server") | nindent 8 }}
+      annotations:
+        # Перезапуск подов при изменении конфигурации: без него правка
+        # ConfigMap не долетает до уже запущенных подов.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "goph-profile.serviceAccountName" . }}
+      # Больше, чем нужно graceful shutdown (10 с на дренаж соединений
+      # плюс сброс буфера спанов): SIGKILL не должен обрывать запросы.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "goph-profile.appPodSecurityContext" . | nindent 8 }}
+      containers:
+        - name: server
+          image: {{ include "goph-profile.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "goph-profile.fullname" . }}-config
+          env:
+            {{- include "goph-profile.appSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "goph-profile.appContainerSecurityContext" . | nindent 12 }}
+            # Приложение не пишет в корневую ФС: изображения обрабатываются
+            # в памяти, логи идут в stdout. Запись допустима только в /tmp.
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # Страховка для multipart: файлы до 10 МБ разбираются в памяти,
+            # но при изменении лимитов Go начнёт писать сюда, а не в ФС образа.
+            - name: tmp
+              mountPath: /tmp
+          # Готовность к трафику: /health опрашивает БД, S3 и брокер и
+          # отдаёт 503, пока зависимости не поднялись.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          # Живость: /livez не трогает зависимости намеренно — когда БД
+          # недоступна, рестарт пода не помогает, а рестарт-цикл мешает
+          # восстановлению. Проверяется, что процесс отвечает.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}

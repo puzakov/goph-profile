@@ -1,0 +1,14 @@
+apiVersion: v2
+name: goph-profile
+description: >
+  Микросервис аватарок GophProfile: HTTP-сервер, воркер асинхронной
+  обработки изображений и его инфраструктура (PostgreSQL, RabbitMQ, MinIO).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - avatars
+  - go
+  - postgresql
+  - rabbitmq
+  - minio

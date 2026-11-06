@@ -1,0 +1,37 @@
+# Несекретная конфигурация приложения. Имена ключей совпадают
+# с переменными окружения из internal/config, поды читают их через envFrom.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "goph-profile.fullname" . }}-config
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  LOG_FORMAT: {{ .Values.config.logFormat | quote }}
+
+  # server: HTTP API и статика веб-интерфейса.
+  HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
+  STATIC_DIR: {{ .Values.config.staticDir | quote }}
+
+  # worker: /metrics на отдельном порту.
+  METRICS_ADDR: {{ .Values.config.metricsAddr | quote }}
+
+  # Адрес хранилища собирается из имени сервиса MinIO, если не задан явно
+  # (values-prod подставляет внешний S3).
+  S3_ENDPOINT: {{ include "goph-profile.s3Endpoint" . | quote }}
+  S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
+  S3_REGION: {{ .Values.config.s3.region | quote }}
+  S3_USE_SSL: {{ .Values.config.s3.useSSL | quote }}
+
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
+
+  # RabbitMQ Management API — источник метрик очередей у воркера.
+  RABBITMQ_MANAGEMENT_URL: {{ include "goph-profile.rabbitmqManagementUrl" . | quote }}
+  RABBITMQ_MANAGEMENT_USER: {{ .Values.config.rabbitmqManagement.user | quote }}
+  RABBITMQ_MANAGEMENT_PASSWORD: {{ .Values.config.rabbitmqManagement.password | quote }}
+
+  # Ограничение частоты REST API: токенов в секунду на клиента (X-User-ID
+  # или IP) и размер всплеска. 0 отключает ограничение.
+  RATE_LIMIT_RPS: {{ .Values.config.rateLimitRPS | quote }}
+  RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}

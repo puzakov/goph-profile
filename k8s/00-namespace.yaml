@@ -1,0 +1,19 @@
+# Отдельный namespace для всего стенда: приложение и его инфраструктура.
+# Один namespace упрощает NetworkPolicy (правила ссылаются на поды и
+# namespace-лейблы) и позволяет снести стенд одной командой.
+#
+# pod-security.kubernetes.io/enforce: restricted — политика Pod Security
+# Admission. Это замена PodSecurityPolicy: сам PSP удалён из Kubernetes
+# в версии 1.25, и роль «не пускать в namespace привилегированные поды»
+# выполняет встроенный admission-контроллер, управляемый лейблами.
+# Уровень restricted — самый строгий: требует runAsNonRoot, seccomp,
+# запрета эскалации привилегий и сброса capabilities. Всем подам стенда
+# эти поля проставлены, поэтому политика их пропускает.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

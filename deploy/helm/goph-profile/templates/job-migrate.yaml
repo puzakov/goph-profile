@@ -1,0 +1,62 @@
+# Миграции схемы — шаг релиза, а не работа пода.
+#
+# ПОЧЕМУ post-install, А НЕ pre-install.
+# Хук pre-install выполняется раньше, чем Helm создаст ресурсы релиза.
+# Postgres поднимается этим же чартом, поэтому на первой установке его ещё
+# не существует — и появиться не может: создание ресурсов ждёт завершения
+# хука. Job упирался бы в неразрешимое имя сервиса до исчерпания повторов
+# и ронял установку. pre-upgrade рядом с post-install даёт то, что нужно
+# на обновлении: схема меняется до выката новых подов. На первой установке
+# порядок обратный, но схему в этом случае применяет само приложение —
+# server и worker вызывают те же миграции при старте.
+#
+# hook-delete-policy: before-hook-creation — Job прошлого релиза удаляется
+# перед созданием нового (спецификация Job неизменяема), но завершённый
+# Job остаётся в кластере до следующего обновления: по нему видно, что
+# миграции применились, и читаются логи.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "goph-profile.fullname" . }}-migrate
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    # Отрицательный вес: хук идёт раньше остальных хуков релиза.
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "goph-profile.serviceAccountName" . }}
+      # Токен не монтируется: к API Kubernetes этот под не обращается.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "goph-profile.appPodSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "goph-profile.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["migrate"]
+          securityContext:
+            {{- include "goph-profile.appContainerSecurityContext" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          # Шагу миграций нужен только DSN: остальные обязательные
+          # переменные сервиса (S3, RabbitMQ) не читаются.
+          #
+          # Строка подключения передаётся значением, а не ссылкой на Secret:
+          # на pre-upgrade Secret в кластере — от прошлого релиза, и взятая
+          # из него строка разошлась бы с той, что ставится этим обновлением.
+          # Отдельного класса утечки тут нет: Helm и так хранит values
+          # релиза в Secret sh.helm.release.v1.*, доступном тем же ролям.
+          env:
+            - name: DATABASE_URL
+              value: {{ include "goph-profile.databaseUrl" . | quote }}
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }

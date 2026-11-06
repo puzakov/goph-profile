@@ -10,6 +10,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/server ./cmd/server
 RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
+# Шаг миграций: в K8s запускается Job'ом до выката подов.
+RUN CGO_ENABLED=0 go build -trimpath -o /out/migrate ./cmd/migrate
 
 # ---------- Финальный образ ----------
 FROM alpine:3.20

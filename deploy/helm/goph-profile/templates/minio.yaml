@@ -1,0 +1,97 @@
+{{- if .Values.minio.enabled }}
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "minio") }}
+# MinIO — S3-совместимое хранилище файлов аватарок и миниатюр.
+#
+# Наружу отдаётся только S3 API (9000). Консоль на 9001 слушает внутри
+# пода и в сервис не включена: для отладки достаточно kubectl port-forward.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "minio") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "minio") | nindent 8 }}
+    spec:
+      # UID 1000 — пользователь minio-user в официальном образе.
+      # fsGroup нужен, чтобы под мог писать в смонтированный том.
+      # Набор полей рассчитан на уровень restricted политики Pod Security
+      # Admission, которой помечен namespace.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image | quote }}
+          imagePullPolicy: {{ .Values.minio.pullPolicy }}
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - name: s3
+              containerPort: 9000
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: MINIO_ROOT_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          # Уровень контейнера: MinIO слушает непривилегированный порт 9000.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  selector:
+    {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "minio") | nindent 4 }}
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+{{- end }}

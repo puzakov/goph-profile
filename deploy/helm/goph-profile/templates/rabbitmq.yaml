@@ -1,0 +1,97 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "rabbitmq") }}
+# RabbitMQ — очередь событий обработки, ретраи и dead-letter.
+#
+# Образ с management-плагином: его API (порт 15672) читает коллектор
+# метрик воркера. Порт не публикуется за пределы кластера.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "rabbitmq") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "rabbitmq") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "rabbitmq") | nindent 8 }}
+    spec:
+      # UID/GID образа rabbitmq:3.13-management-alpine. Набор полей
+      # рассчитан на уровень restricted политики Pod Security Admission.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rabbitmq
+          image: {{ .Values.rabbitmq.image | quote }}
+          imagePullPolicy: {{ .Values.rabbitmq.pullPolicy }}
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            # Пользователь задаётся явно: встроенный guest по умолчанию
+            # принимает подключения только с localhost.
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: RABBITMQ_DEFAULT_USER
+            - name: RABBITMQ_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: RABBITMQ_DEFAULT_PASSWORD
+          # Таймауты проб заданы явно и с запасом. Умолчание — одна секунда,
+          # а rabbitmq-diagnostics запускает отдельную виртуальную машину
+          # Erlang: под лимитом CPU она не успевает ответить, проба считается
+          # проваленной и liveness перезапускает здоровый брокер.
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 20
+            # Запуск брокера с management-плагином занимает десятки секунд.
+            failureThreshold: 3
+          # Уровень контейнера: порты 5672 и 15672 непривилегированные,
+          # capabilities брокеру не нужны.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.rabbitmq.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "rabbitmq") | nindent 4 }}
+spec:
+  selector:
+    {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "rabbitmq") | nindent 4 }}
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management
+{{- end }}

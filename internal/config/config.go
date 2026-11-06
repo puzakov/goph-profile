@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -28,6 +29,11 @@ type Config struct {
 	LogFormat    string // формат логов: json или text
 	OTLPEndpoint string // URL OTLP/HTTP-коллектора; пусто — трейсинг выключен
 	MetricsAddr  string // адрес /metrics воркера (сервер отдаёт метрики на HTTPAddr)
+
+	// Ограничение частоты REST API: запросов в секунду на клиента и размер
+	// одномоментного всплеска. Ноль в RateLimitRPS отключает ограничение.
+	RateLimitRPS   int
+	RateLimitBurst int
 
 	// RabbitMQ Management API — источник метрик очередей.
 	RabbitMQManagementURL      string
@@ -68,6 +74,10 @@ func Load() (*Config, error) {
 		LogFormat:    getenv("LOG_FORMAT", "json"),
 		OTLPEndpoint: getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		MetricsAddr:  getenv("METRICS_ADDR", ":9091"),
+		// Лимиты по умолчанию щадящие: 20 запросов/с на клиента с всплеском
+		// до 40. RATE_LIMIT_RPS=0 отключает ограничение целиком.
+		RateLimitRPS:   getenvInt("RATE_LIMIT_RPS", 20),
+		RateLimitBurst: getenvInt("RATE_LIMIT_BURST", 40),
 		// Пустой RABBITMQ_MANAGEMENT_URL выключает сбор метрик очередей.
 		RabbitMQManagementURL:      getenv("RABBITMQ_MANAGEMENT_URL", ""),
 		RabbitMQManagementUser:     getenv("RABBITMQ_MANAGEMENT_USER", "guest"),
@@ -100,4 +110,18 @@ func getenvBool(key string, def bool) bool {
 		return def
 	}
 	return v == "true" || v == "1"
+}
+
+// getenvInt читает целочисленную переменную окружения; при нечисловом
+// значении молча возвращает значение по умолчанию.
+func getenvInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }

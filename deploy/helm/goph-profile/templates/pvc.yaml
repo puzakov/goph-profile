@@ -1,0 +1,35 @@
+{{- if .Values.postgres.enabled }}
+# Том под данные PostgreSQL.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "goph-profile.componentName" (dict "root" . "component" "postgres") }}-data
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.postgres.storageClassName }}
+  storageClassName: {{ .Values.postgres.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+{{- end }}
+{{- if .Values.minio.enabled }}
+---
+# Том под файлы аватарок и миниатюр.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "goph-profile.componentName" (dict "root" . "component" "minio") }}-data
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.minio.storageClassName }}
+  storageClassName: {{ .Values.minio.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.minio.storage }}
+{{- end }}

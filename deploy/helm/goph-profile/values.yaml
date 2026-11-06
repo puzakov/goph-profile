@@ -1,0 +1,177 @@
+# Значения по умолчанию: самодостаточный стенд для локального кластера
+# (minikube). Все компоненты — приложение и его инфраструктура — едут
+# вместе. Пароли здесь демонстрационные; продакшен переопределяет их
+# (см. values-prod.yaml).
+
+# Образ приложения. Один для server, worker и Job'а миграций.
+# В minikube образ собирается внутрь демона кластера:
+#   eval $(minikube docker-env) && make docker-build-minikube
+image:
+  repository: goph-profile
+  tag: latest
+  # IfNotPresent: образ уже в кластере, тянуть его из реестра неоткуда.
+  pullPolicy: IfNotPresent
+
+# Переопределение имён (стандартные для Helm ключи).
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Создаётся отдельный SA без прав: приложение не обращается к API
+  # Kubernetes. Токен не монтируется — под не сможет обратиться к API
+  # даже при компрометации контейнера.
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+server:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    cpuUtilization: 70
+    # Таргет по памяти шумный (сборка мусора в Go, буферы изображений).
+    # Оставлен по требованию; на реальной нагрузке его заменяют на RPS.
+    memoryUtilization: 80
+    scaleDownStabilizationSeconds: 300
+
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    # Разбор изображений держит память до конца обработки файла.
+    limits: { cpu: 500m, memory: 512Mi }
+  hpa:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    # Только CPU: ресайз и JPEG-кодирование упираются в процессор,
+    # а память определяется размером файла, а не глубиной очереди.
+    cpuUtilization: 70
+    scaleDownStabilizationSeconds: 300
+
+# Несекретная конфигурация → ConfigMap.
+config:
+  logLevel: info
+  logFormat: json
+  httpAddr: ":8080"
+  staticDir: "/app/web/static"
+  metricsAddr: ":9091"
+  # Пусто — трейсинг выключен: Jaeger в этот стенд не входит.
+  otelEndpoint: ""
+  s3:
+    # Пусто — endpoint собирается из имени сервиса MinIO.
+    endpoint: ""
+    bucket: avatars
+    region: us-east-1
+    useSSL: "false"
+  rabbitmqManagement:
+    # Пусто — адрес собирается из имени сервиса RabbitMQ.
+    url: ""
+    user: guest
+    # Пароль Management API в ConfigMap — компромисс dev-стенда;
+    # в продакшене переносится в Secret.
+    password: guest
+  # Ограничение частоты REST API: токенов в секунду на клиента (X-User-ID
+  # или IP) и размер одномоментного всплеска. 0 отключает ограничение.
+  rateLimitRPS: 20
+  rateLimitBurst: 40
+
+# Секреты → Secret. Пустые строки подключения означают сборку из
+# компонентов ниже (host берётся из имени сервиса).
+secrets:
+  databaseUrl: ""
+  rabbitmqUrl: ""
+  postgresUser: goph
+  postgresPassword: goph
+  postgresDb: goph
+  minioRootUser: minioadmin
+  minioRootPassword: minioadmin
+  # Задано явно: встроенный guest принимает подключения только с localhost.
+  rabbitmqDefaultUser: guest
+  rabbitmqDefaultPassword: guest
+
+# Инфраструктура. Компонент можно выключить, если используется внешний:
+# postgres.enabled=false + secrets.databaseUrl — стенд без своей БД.
+#
+# pullPolicy: IfNotPresent у всех трёх образов задан явно. По умолчанию
+# Kubernetes для тега latest выбирает Always — kubelet идёт в реестр даже
+# тогда, когда образ уже лежит в кластере. Локальному стенду это не нужно,
+# а для MinIO и вовсе губительно: репозиторий minio/minio с Docker Hub
+# удалён, и образ приходится загружать в кластер из локальной копии
+# (см. раздел MinIO в README).
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  pullPolicy: IfNotPresent
+  storage: 1Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+rabbitmq:
+  enabled: true
+  image: rabbitmq:3.13-management-alpine
+  pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+minio:
+  enabled: true
+  # Образ переопределяется при установке, если взят из другого источника:
+  #   --set minio.image=quay.io/minio/minio:TAG
+  image: minio/minio:latest
+  pullPolicy: IfNotPresent
+  storage: 1Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+ingress:
+  enabled: true
+  className: nginx
+  host: avatars.local
+  # Согласовано с лимитом загрузки в приложении (10 МБ): без аннотации
+  # nginx отклонит файл своим дефолтным 1 МБ.
+  proxyBodySize: 10m
+  annotations: {}
+  tls: []
+  #  - secretName: avatars-tls
+  #    hosts: [avatars.local]
+
+# Мониторинг: ресурсы Prometheus Operator. Требуют установленных CRD
+# (kube-prometheus-stack) — без них шаблоны пропускаются, установка
+# чарта не падает. После установки оператора достаточно helm upgrade.
+serviceMonitor:
+  enabled: true
+  # Лейбл, по которому Prometheus из kube-prometheus-stack выбирает
+  # ServiceMonitor'ы. Должен совпадать с именем релиза стека.
+  labels:
+    release: kube-prometheus-stack
+  interval: 15s
+
+prometheusRule:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+
+networkPolicy:
+  # По умолчанию выключено: правила работают только с CNI, который их
+  # поддерживает (Calico, Cilium). В minikube с CNI по умолчанию политики
+  # применятся, но трафик ограничивать не будут — включено в values-prod.
+  enabled: false
+  ingressNginxNamespace: ingress-nginx
+  monitoringNamespace: monitoring
+
+migrate:
+  # Job применяет миграции шагом релиза (Helm-хук post-install/pre-upgrade).
+  # Число повторов Kubernetes дополняет ожидание БД внутри бинарника:
+  # на первой установке PostgreSQL инициализируется параллельно с Job'ом.
+  backoffLimit: 3

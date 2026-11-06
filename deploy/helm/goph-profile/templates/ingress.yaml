@@ -1,0 +1,36 @@
+{{- if .Values.ingress.enabled }}
+# Единственная точка входа в сервис снаружи кластера.
+# Весь трафик идёт на сервер: воркер наружу не публикуется.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "goph-profile.fullname" . }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "ingress") | nindent 4 }}
+  annotations:
+    # Лимит тела запроса согласован с maxUploadSize в приложении (10 МБ):
+    # без него nginx отклонит загрузку своим дефолтным 1 МБ.
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "goph-profile.componentName" (dict "root" . "component" "server") }}
+                port:
+                  number: 80
+{{- end }}

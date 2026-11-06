@@ -1,0 +1,126 @@
+# HTTP-сервер: REST API и веб-интерфейс.
+#
+# Реплик две — минимум HPA (11-hpa.yaml): одна реплика не переживает
+# выкат и обновление узла без простоя.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goph-profile-server
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: goph-profile-server
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goph-profile-server
+        app.kubernetes.io/part-of: goph-profile
+    spec:
+      serviceAccountName: goph-profile
+      # Больше, чем нужно graceful shutdown (10 с на дренаж соединений
+      # плюс сброс буфера спанов): SIGKILL не должен обрывать запросы.
+      terminationGracePeriodSeconds: 30
+      # Уровень пода: пользователь и профиль seccomp.
+      # allowPrivilegeEscalation и capabilities сюда ставить нельзя — они
+      # объявлены только у контейнера, и API-сервер отвергнет манифест.
+      securityContext:
+        runAsNonRoot: true
+        # nobody в alpine — сервису не нужны привилегии и своя ФС.
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: goph-profile:latest
+          # Образ собран локально в демоне minikube (make docker-build-minikube).
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: goph-profile-config
+          env:
+            # Секреты — только через secretKeyRef, не значениями в манифесте.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: DATABASE_URL }
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: RABBITMQ_URL }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: S3_ACCESS_KEY }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: S3_SECRET_KEY }
+          # Уровень контейнера: запрет эскалации привилегий, сброс
+          # capabilities и корневая ФС только для чтения.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            # Приложение не пишет в корневую ФС: изображения обрабатываются
+            # в памяти, логи идут в stdout. Запись допустима только в /tmp.
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # Страховка для multipart: файлы до 10 МБ разбираются в памяти,
+            # но при изменении лимитов Go начнёт писать сюда, а не в ФС образа.
+            - name: tmp
+              mountPath: /tmp
+          # Готовность к трафику: /health опрашивает БД, S3 и брокер и
+          # отдаёт 503, пока зависимости не поднялись. 6 попыток по 5 с
+          # дают запас на первый старт соседних подов.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          # Живость: /livez не трогает зависимости намеренно — когда БД
+          # недоступна, рестарт пода не помогает, а рестарт-цикл мешает
+          # восстановлению. Здесь проверяется, что процесс отвечает.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goph-profile-server
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: goph-profile-server
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  selector:
+    app.kubernetes.io/name: goph-profile-server
+  ports:
+    # Порт для Ingress: клиенты ходят на 80.
+    - name: http
+      port: 80
+      targetPort: http
+    # Обязательное имя metrics требуется ServiceMonitor'ом (k8s/monitoring/):
+    # он ссылается на порт по имени, а не по номеру.
+    - name: metrics
+      port: 8080
+      targetPort: http

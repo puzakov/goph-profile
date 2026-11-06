@@ -1,0 +1,58 @@
+GophProfile установлен в namespace {{ .Release.Namespace }}.
+
+1. Дождитесь готовности подов и посмотрите на Job миграций:
+
+   kubectl -n {{ .Release.Namespace }} get pods -w
+   kubectl -n {{ .Release.Namespace }} logs job/{{ include "goph-profile.fullname" . }}-migrate
+
+   Первый запуск занимает до пары минут: PostgreSQL, RabbitMQ и MinIO
+   поднимаются параллельно с приложением, а сервер и воркер ждут их
+   готовности (проба готовности сервера вернёт 503 раньше).
+
+{{- if .Values.ingress.enabled }}
+
+2. Проверка API через Ingress (host {{ .Values.ingress.host }}):
+
+{{- if eq .Values.ingress.className "nginx" }}
+   # Адрес ingress-контроллера. В minikube это $(minikube ip);
+   # чтобы обращаться по имени, добавьте хост в /etc/hosts.
+   curl -H "Host: {{ .Values.ingress.host }}" http://$(minikube ip)/health
+   curl -H "Host: {{ .Values.ingress.host }}" -H "X-User-ID: user-1" \
+     -F "file=@photo.jpg" http://$(minikube ip)/api/v1/avatars
+{{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "goph-profile.componentName" (dict "root" . "component" "server") }} 8080:80
+   curl http://localhost:8080/health
+{{- end }}
+{{- else }}
+
+2. Ingress выключен. Проброс портов:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "goph-profile.componentName" (dict "root" . "component" "server") }} 8080:80
+   curl http://localhost:8080/health
+{{- end }}
+
+3. Метрики (порты не публикуются наружу):
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "goph-profile.componentName" (dict "root" . "component" "server") }} 8080:8080
+   curl -s localhost:8080/metrics | grep avatars_
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "goph-profile.componentName" (dict "root" . "component" "worker") }} 9091:9091
+   curl -s localhost:9091/metrics | grep avatars_
+
+4. Автомасштабирование (нужен metrics-server):
+
+   kubectl -n {{ .Release.Namespace }} get hpa
+
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+
+5. ServiceMonitor и PrometheusRule не созданы: в кластере нет CRD
+   monitoring.coreos.com. Установите Prometheus Operator (например,
+   kube-prometheus-stack) и повторите helm upgrade — ресурсы появятся
+   автоматически.
+{{- end }}
+
+{{- if not .Values.networkPolicy.enabled }}
+
+6. NetworkPolicy выключены (networkPolicy.enabled=false). Они работают
+   только с CNI, поддерживающим сетевые политики: Calico, Cilium.
+{{- end }}

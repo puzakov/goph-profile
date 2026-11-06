@@ -1,0 +1,27 @@
+# Единственная точка входа в сервис снаружи кластера.
+#
+# Весь трафик идёт на сервер: воркер наружу не публикуется.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: goph-profile
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+  annotations:
+    # Лимит тела запроса согласован с maxUploadSize в приложении (10 МБ):
+    # без него nginx отклонит загрузку своим дефолтным 1 МБ.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: avatars.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: goph-profile-server
+                port:
+                  number: 80

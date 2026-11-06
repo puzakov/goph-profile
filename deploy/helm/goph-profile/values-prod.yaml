@@ -1,0 +1,101 @@
+# Продакшен-профиль: переопределяет values.yaml.
+#
+#   helm upgrade --install goph-profile deploy/helm/goph-profile \
+#     -n goph-profile --create-namespace \
+#     -f deploy/helm/goph-profile/values-prod.yaml \
+#     --set secrets.postgresPassword="$POSTGRES_PASSWORD" ...
+#
+# СЕКРЕТЫ ЗДЕСЬ НЕ ХРАНЯТСЯ. Значения по умолчанию из values.yaml —
+# демонстрационные; в этом файле их переопределяют из переменных окружения
+# CI или внешнего менеджера секретов (External Secrets, SOPS, Vault).
+# Helm записывает values в открытом виде в Secret релиза, поэтому пароли
+# в values-файле, попавшем в git, — утечка.
+
+image:
+  # Тег фиксированный, а не latest: откат релиза должен возвращать
+  # конкретную сборку, а не «то, что лежит в реестре сейчас».
+  repository: registry.example.com/goph-profile
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+server:
+  replicas: 3
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+
+worker:
+  replicas: 2
+  resources:
+    requests: { cpu: 500m, memory: 256Mi }
+    # Обработка изображений ограничена лимитом, а не числом воркеров:
+    # файл в 10 МБ в распакованном виде занимает заметно больше.
+    limits: { cpu: "1", memory: 1Gi }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+
+config:
+  logLevel: warn
+  # Продовые адреса внешних сервисов. Пустые значения означали бы сборку
+  # имён из компонентов чарта — здесь компоненты выключены.
+  otelEndpoint: "http://otel-collector.observability:4318"
+  s3:
+    endpoint: "s3.example.com:9000"
+    bucket: avatars
+    region: ru-central1
+    useSSL: "true"
+  rabbitmqManagement:
+    url: "https://rabbitmq.example.com"
+    user: goph-metrics
+    password: ""
+
+# Управляемые БД, брокер и объектное хранилище вместо подов в кластере:
+# их ресурсы этот релиз не создаёт, адреса берутся из config выше
+# и строк подключения ниже.
+postgres:
+  enabled: false
+rabbitmq:
+  enabled: false
+minio:
+  enabled: false
+
+# Строки подключения к внешним сервисам. Пустые значения — заполняются
+# при установке через --set из секретов CI.
+secrets:
+  databaseUrl: ""
+  rabbitmqUrl: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  host: avatars.example.com
+  proxyBodySize: 10m
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  # TLS обязателен: через Ingress идут идентификаторы пользователей.
+  tls:
+    - secretName: avatars-tls
+      hosts:
+        - avatars.example.com
+
+serviceMonitor:
+  enabled: true
+prometheusRule:
+  enabled: true
+
+# Сетевые политики включаются здесь: в продакшене CNI их поддерживает
+# (Calico/Cilium), и микросегментация обязательна.
+networkPolicy:
+  enabled: true
+
+migrate:
+  # Продовая БД управляемая и к моменту выката уже отвечает, поэтому
+  # повторов меньше: обычно хватает одного запуска.
+  backoffLimit: 2

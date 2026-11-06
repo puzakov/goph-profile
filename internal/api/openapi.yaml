@@ -8,6 +8,9 @@ info:
   version: 0.1.0
 servers:
   - url: http://localhost:8080
+    description: Локальный стенд (docker compose)
+  - url: http://avatars.local
+    description: Kubernetes (host из Ingress)
 tags:
   - name: avatars
     description: Операции с аватарками
@@ -59,6 +62,7 @@ paths:
                   - type: object
                     properties:
                       max_size: { type: integer }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /api/v1/avatars/{avatarID}:
     get:
       tags: [avatars]
@@ -91,6 +95,7 @@ paths:
             image/webp: { schema: { type: string, format: binary } }
         '304': { description: Не изменился (If-None-Match) }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
       tags: [avatars]
       summary: >
@@ -106,6 +111,7 @@ paths:
         '204': { description: Удалена }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /api/v1/avatars/{avatarID}/metadata:
     get:
       tags: [avatars]
@@ -119,6 +125,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Metadata' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /api/v1/users/{userID}/avatar:
     get:
       tags: [users]
@@ -146,6 +153,7 @@ paths:
         '204': { description: Удалена }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /api/v1/users/{userID}/avatars:
     get:
       tags: [users]
@@ -160,6 +168,7 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/AvatarResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /health:
     get:
       tags: [system]
@@ -197,6 +206,17 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
       description: Доступ запрещён
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: >
+        Превышен лимит частоты запросов (RATE_LIMIT_RPS/RATE_LIMIT_BURST).
+        Заголовок Retry-After указывает, через сколько секунд можно
+        повторить запрос.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

@@ -1,0 +1,99 @@
+# RabbitMQ — очередь событий обработки аватарок, ретраи и dead-letter.
+#
+# Образ с management-плагином: его API (порт 15672) читает коллектор
+# метрик воркера, отдающий глубину очередей и число консьюмеров.
+# Порт 15672 не выходит за пределы кластера — веб-консоль наружу не нужна.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/part-of: goph-profile
+    spec:
+      # UID/GID образа rabbitmq:3.13-management-alpine. Набор полей
+      # рассчитан на уровень restricted политики Pod Security Admission.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management-alpine
+          # IfNotPresent: тег фиксирован, а локальному стенду незачем
+          # сверяться с реестром на каждом старте пода.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            # Пользователь задаётся явно: встроенный guest по умолчанию
+            # принимает подключения только с localhost.
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: RABBITMQ_DEFAULT_USER }
+            - name: RABBITMQ_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: RABBITMQ_DEFAULT_PASSWORD }
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            # Таймаут задан явно: умолчание — одна секунда, а диагностика
+            # поднимает отдельную виртуальную машину Erlang и под лимитом
+            # CPU в неё не укладывается.
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 20
+            # Старт брокера с management-плагином занимает десятки секунд:
+            # запас на медленный первый запуск.
+            failureThreshold: 3
+          # Уровень контейнера: порты 5672 и 15672 непривилегированные,
+          # capabilities брокеру не нужны.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management

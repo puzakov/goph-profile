@@ -1,0 +1,30 @@
+# Дисковые тома для состояния инфраструктуры.
+#
+# ReadWriteOnce: каждый том монтируется одним подом — ровно то, что нужно
+# одноподовым Postgres и MinIO. storageClassName не задан: используется
+# класс по умолчанию (в minikube — standard на hostPath).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
