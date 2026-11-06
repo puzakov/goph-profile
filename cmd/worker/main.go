@@ -145,7 +145,12 @@ func run(log *slog.Logger, cfg *config.Config) error {
 	log.Info("worker started", "rabbitmq", cfg.RabbitMQURL)
 
 	// Run блокируется до отмены контекста или фатальной ошибки консьюмера.
-	return w.Run(ctx, cfg.RabbitMQURL)
+	err = w.Run(ctx, cfg.RabbitMQURL)
+	// Пришедший сигнал (SIGTERM/SIGINT) отменяет контекст: Run дочитывает
+	// текущее сообщение, после чего под выходит штатно, а defer'ы закрывают
+	// соединения и метрики-сервер. Строка в логе маркирует штатную остановку.
+	log.Info("shutting down...")
+	return err
 }
 
 // registerMetrics регистрирует коллекторы метрик воркера в реестре.

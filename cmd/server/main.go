@@ -127,7 +127,7 @@ func run(log *slog.Logger, cfg *config.Config) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handlers.NewRouter(svc, cfg.StaticDir, appMetrics, log),
+		Handler:           handlers.NewRouter(svc, cfg.StaticDir, appMetrics, log, cfg.RateLimitRPS, cfg.RateLimitBurst),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

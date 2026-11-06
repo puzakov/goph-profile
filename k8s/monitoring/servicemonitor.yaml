@@ -1,0 +1,48 @@
+# Регистрация сервиса в Prometheus Operator.
+#
+# Применяется ОТДЕЛЬНО от основных манифестов: ресурсы monitoring.coreos.com
+# существуют только после установки CRD (например, вместе с
+# kube-prometheus-stack). На голом кластере apply упадёт на неизвестном типе:
+#   kubectl apply -f k8s/monitoring/
+#
+# Лейбл release обязателен: Prometheus из kube-prometheus-stack выбирает
+# ServiceMonitor'ы по нему. Если релиз стека назван иначе, поправьте
+# значение лейбла.
+---
+# Сервер: /metrics отдаётся на том же порту, что и API (8080),
+# в сервисе он объявлен под именем metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: goph-profile-server
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-server
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+# Воркер: собственный порт метрик 9091. Здесь лежат метрики состояния
+# системы — объём хранилища, число пользователей, глубина очередей.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: goph-profile-worker
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

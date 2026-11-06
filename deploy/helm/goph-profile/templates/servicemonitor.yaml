@@ -1,0 +1,44 @@
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+# Регистрация сервиса в Prometheus Operator.
+#
+# Шаблон пропускается, если CRD monitoring.coreos.com в кластере нет:
+# без этой проверки установка чарта на голый кластер падала бы на
+# неизвестном типе ресурса. После установки kube-prometheus-stack
+# достаточно повторить helm upgrade — ресурсы появятся.
+---
+# Сервер: /metrics отдаётся на том же порту, что и API (8080),
+# в сервисе он объявлен под именем metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "goph-profile.componentName" (dict "root" . "component" "server") }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "server") | nindent 4 }}
+    {{- toYaml .Values.serviceMonitor.labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "server") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+---
+# Воркер: собственный порт метрик 9091. Здесь метрики состояния системы —
+# объём хранилища, число пользователей, глубина очередей.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "goph-profile.componentName" (dict "root" . "component" "worker") }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+    {{- toYaml .Values.serviceMonitor.labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

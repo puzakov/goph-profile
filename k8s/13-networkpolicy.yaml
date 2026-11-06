@@ -1,0 +1,195 @@
+# Сетевые политики: микросегментация внутри namespace.
+#
+# ВАЖНО: политики применяются только там, где их поддерживает CNI.
+# Дефолтный CNI minikube правила игнорирует — манифесты применятся без
+# ошибок, но трафик ограничивать не будут. Для реальной проверки нужен
+# Calico или Cilium: minikube start --cni=calico (пересоздаёт кластер).
+#
+# Принцип: по умолчанию запрещено всё, дальше разрешается только то, что
+# сервис действительно использует. Общая метка подов приложения —
+# app.kubernetes.io/part-of: goph-profile, она есть у server, worker и Job'а.
+---
+# PostgreSQL принимает подключения только от подов приложения.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: goph-profile
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: goph-profile
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# RabbitMQ: AMQP для приложения, Management API — только воркеру,
+# который собирает метрики очередей.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ingress
+  namespace: goph-profile
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: goph-profile
+      ports:
+        - protocol: TCP
+          port: 5672
+        - protocol: TCP
+          port: 15672
+---
+# MinIO принимает S3-трафик только от подов приложения.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-ingress
+  namespace: goph-profile
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: goph-profile
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Сервер: входящий трафик от ingress-контроллера и Prometheus,
+# исходящий — только к своим зависимостям и DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: goph-profile-server
+  namespace: goph-profile
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-server
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Внешние запросы приходят через ingress-nginx.
+    # Лейбл kubernetes.io/metadata.name проставляется кластером
+    # автоматически (Kubernetes 1.21+) — помечать namespace вручную не нужно.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Скрейп /metrics. Если Prometheus развёрнут в другом namespace,
+    # значение лейбла нужно поправить.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+    # kubelet обращается к пробам с адреса узла, вне pod-сети,
+    # поэтому источник проб отдельно не ограничивается.
+  egress:
+    # Разрешение имён: без CoreDNS сервис не найдёт ни одну зависимость.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
+      ports:
+        - protocol: TCP
+          port: 5672
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Воркер: наружу не отдаёт ничего, кроме /metrics для Prometheus;
+# ходит в те же зависимости плюс Management API брокера.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: goph-profile-worker
+  namespace: goph-profile
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-worker
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9091
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq
+      ports:
+        - protocol: TCP
+          port: 5672
+        # Management API — источник метрик очередей.
+        - protocol: TCP
+          port: 15672
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000

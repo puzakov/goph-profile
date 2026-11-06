@@ -12,7 +12,8 @@ import (
 )
 
 // NewRouter собирает HTTP-роутер: REST API, healthcheck и веб-интерфейс.
-func NewRouter(svc AvatarService, staticDir string, m *metrics.Metrics, log *slog.Logger) http.Handler {
+// rps/burst задают ограничение частоты REST API (0 — без ограничения).
+func NewRouter(svc AvatarService, staticDir string, m *metrics.Metrics, log *slog.Logger, rps, burst int) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	// Tracing снаружи RequestLogger: логгер и хендлеры должны видеть спан
@@ -25,12 +26,25 @@ func NewRouter(svc AvatarService, staticDir string, m *metrics.Metrics, log *slo
 
 	// Healthcheck.
 	r.Get("/health", api.Health)
+	// Liveness: процесс жив и отвечает. Зависимости здесь намеренно не
+	// проверяются — при недоступной БД рестарт пода ничего не чинит, а
+	// ложные срабатывания только усиливают деградацию. Готовность
+	// зависимостей отдаёт /health (readiness-проба).
+	r.Get("/livez", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	// Метрики: регистрируются до статики, иначе FileServer перехватит путь.
 	r.Handle("/metrics", m.Handler())
 
+	// Ограничение частоты — только на REST API: пробы, метрики и статика
+	// работают без лимитов, иначе Prometheus и Kubernetes сами упёрлись бы
+	// в 429.
+	rateLimit := NewRateLimiter(rps, burst, log)
+
 	// REST API.
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(rateLimit.Middleware)
 		r.Post("/avatars", api.Upload)                       // загрузка
 		r.Get("/avatars/{avatarID}", api.GetAvatar)          // получение файла
 		r.Get("/avatars/{avatarID}/metadata", api.Metadata)  // метаданные

@@ -1,0 +1,10 @@
+# Служебные файлы, не попадающие в пакет чарта.
+.DS_Store
+.git/
+.gitignore
+*.tmproj
+.idea/
+.vscode/
+*.swp
+*.bak
+*.tgz

@@ -1,0 +1,20 @@
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "server") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "server") | nindent 4 }}
+spec:
+  selector:
+    {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "server") | nindent 4 }}
+  ports:
+    # Порт для Ingress: клиенты ходят на 80.
+    - name: http
+      port: 80
+      targetPort: http
+    # Обязательное имя metrics требуется ServiceMonitor'ом: он ссылается
+    # на порт по имени, а не по номеру.
+    - name: metrics
+      port: 8080
+      targetPort: http

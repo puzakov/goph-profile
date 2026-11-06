@@ -24,7 +24,7 @@ func newTestRouter(t *testing.T) (http.Handler, *prometheus.Registry) {
 	appMetrics := metrics.New(registry)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	r := NewRouter(&fakeService{}, t.TempDir(), appMetrics, log)
+	r := NewRouter(&fakeService{}, t.TempDir(), appMetrics, log, 0, 0)
 	return r, registry
 }
 
@@ -57,4 +57,17 @@ func TestRouter_HealthAndNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, missing.Code)
 	require.False(t, strings.Contains(missing.Body.String(), "goroutine"),
 		"внутренние детали не уходят клиенту")
+}
+
+// /livez — проба живости: отвечает, не трогая зависимости. Даже когда
+// /health отдаёт 503 из-за недоступной БД, liveness должен проходить,
+// иначе под попадает в рестарт-цикл вместо ожидания восстановления.
+func TestRouter_Livez(t *testing.T) {
+	router, _ := newTestRouter(t)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Empty(t, rec.Body.String())
 }

@@ -1,0 +1,66 @@
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "worker") }}
+# Воркер: асинхронная обработка изображений — миниатюры, ретраи, удаление
+# файлов. Трафик к нему не маршрутизируется, поэтому readiness-пробы нет:
+# под готов сразу, а его реальная «готовность» — это чтение очередей,
+# которое видно по метрикам и по статусам аватарок.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  {{- if not .Values.worker.hpa.enabled }}
+  replicas: {{ .Values.worker.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "worker") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "goph-profile.serviceAccountName" . }}
+      # Хватает на дочитывание текущего сообщения: воркер берёт по одному
+      # (Qos=1) и на отмену контекста прекращает выборку.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "goph-profile.appPodSecurityContext" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "goph-profile.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Тот же образ, что у сервера: точка входа выбирается командой.
+          command: ["worker"]
+          ports:
+            - name: metrics
+              containerPort: 9091
+          envFrom:
+            - configMapRef:
+                name: {{ include "goph-profile.fullname" . }}-config
+          env:
+            {{- include "goph-profile.appSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "goph-profile.appContainerSecurityContext" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Проба живости по порту метрик: он открывается только после
+          # успешного подключения к БД, очереди и хранилищу — закрытый
+          # порт означает, что консьюмеры не работают.
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}

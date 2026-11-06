@@ -5,6 +5,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -49,16 +50,72 @@ type EventPublisher interface {
 	Close() error
 }
 
+// dialTimeout ограничивает попытку подключения к брокеру: health-проба
+// ходит в Ping каждые несколько секунд, и подвисший dial не должен
+// удерживать мьютекс неограниченно долго.
+const dialTimeout = 5 * time.Second
+
 // RabbitPublisher — издатель событий на базе RabbitMQ.
+//
+// Соединение восстанавливается само. Перезапуск брокера (обновление,
+// авария, переезд пода) закрывает канал amqp навсегда: без переподключения
+// /health вечно отдаёт 503, под не проходит readiness — но liveness
+// продолжает отвечать, поэтому Kubernetes его не перезапускает, и под
+// бессрочно выпадает из балансировки.
 type RabbitPublisher struct {
-	mu   sync.Mutex // каналы amqp не потокобезопасны
-	conn *amqp.Connection
-	ch   *amqp.Channel
+	mu     sync.Mutex // каналы amqp не потокобезопасны
+	url    string
+	conn   *amqp.Connection
+	ch     *amqp.Channel
+	closed bool // Close вызван: новые соединения не открываются
 }
 
 // NewRabbitPublisher подключается к RabbitMQ и объявляет топологию.
 func NewRabbitPublisher(url string) (*RabbitPublisher, error) {
-	conn, err := amqp.Dial(url)
+	p := &RabbitPublisher{url: url}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := p.reconnectLocked(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Close закрывает канал и соединение с брокером. Идемпотентен и переживает
+// уже разорванное соединение: при остановке пода брокер может быть
+// недоступен, и это не повод возвращать ошибку.
+func (p *RabbitPublisher) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	if p.ch != nil && !p.ch.IsClosed() {
+		if err := p.ch.Close(); err != nil {
+			return err
+		}
+	}
+	if p.conn == nil || p.conn.IsClosed() {
+		return nil
+	}
+	return p.conn.Close()
+}
+
+// Ping проверяет доступность брокера: passive-объявление обменника
+// не создаёт ничего нового, но возвращает ошибку, если брокер недоступен.
+// Разорванное соединение восстанавливается здесь же: проба /health ходит
+// сюда регулярно и служит для издателя поводом переподключиться.
+func (p *RabbitPublisher) Ping(_ context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.withChannelLocked(func(ch *amqp.Channel) error {
+		return ch.ExchangeDeclarePassive(
+			ExchangeName, amqp.ExchangeTopic, true, false, false, false, nil)
+	})
+}
+
+// reconnectLocked открывает новое соединение и объявляет топологию.
+// Вызывается с захваченным mu.
+func (p *RabbitPublisher) reconnectLocked() (*amqp.Channel, error) {
+	conn, err := amqp.DialConfig(p.url, amqp.Config{Dial: amqp.DefaultDial(dialTimeout)})
 	if err != nil {
 		return nil, fmt.Errorf("dial rabbitmq: %w", err)
 	}
@@ -72,24 +129,37 @@ func NewRabbitPublisher(url string) (*RabbitPublisher, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	return &RabbitPublisher{conn: conn, ch: ch}, nil
+	// Прежнее соединение уже разорвано — иначе переподключение не понадобилось
+	// бы, — но закрываем его явно: на нём держатся горутины чтения.
+	if p.conn != nil {
+		_ = p.conn.Close()
+	}
+	p.conn, p.ch = conn, ch
+	return ch, nil
 }
 
-// Close закрывает канал и соединение с брокером.
-func (p *RabbitPublisher) Close() error {
-	if err := p.ch.Close(); err != nil {
+// withChannelLocked выполняет операцию на живом канале, переподключаясь,
+// если канал закрыт. Вызывается с захваченным mu.
+func (p *RabbitPublisher) withChannelLocked(fn func(*amqp.Channel) error) error {
+	if p.closed {
+		return errors.New("publisher closed")
+	}
+	if p.ch == nil || p.ch.IsClosed() || p.conn == nil || p.conn.IsClosed() {
+		if _, err := p.reconnectLocked(); err != nil {
+			return err
+		}
+	}
+	// Соединение могло разорваться между проверкой и вызовом: обрыв
+	// библиотека замечает, только когда читает из сокета. Одна повторная
+	// попытка на новом соединении закрывает эту гонку.
+	err := fn(p.ch)
+	if err == nil || (!p.ch.IsClosed() && !p.conn.IsClosed()) {
 		return err
 	}
-	return p.conn.Close()
-}
-
-// Ping проверяет доступность брокера: passive-объявление обменника
-// не создаёт ничего нового, но возвращает ошибку, если брокер недоступен.
-func (p *RabbitPublisher) Ping(_ context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.ch.ExchangeDeclarePassive(
-		ExchangeName, amqp.ExchangeTopic, true, false, false, false, nil)
+	if _, err := p.reconnectLocked(); err != nil {
+		return err
+	}
+	return fn(p.ch)
 }
 
 // PublishUpload публикует событие загрузки аватарки в брокер.
@@ -126,20 +196,22 @@ func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event 
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.ch.PublishWithContext(ctx,
-		ExchangeName,
-		routingKey,
-		false, // mandatory
-		false, // immediate
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent,
-			MessageId:    messageID,
-			Timestamp:    time.Now(),
-			// Заголовки несут traceparent: воркер продолжит тот же трейс.
-			Headers: injectTraceContext(ctx),
-			Body:    body,
-		})
+	return p.withChannelLocked(func(ch *amqp.Channel) error {
+		return ch.PublishWithContext(ctx,
+			ExchangeName,
+			routingKey,
+			false, // mandatory
+			false, // immediate
+			amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				MessageId:    messageID,
+				Timestamp:    time.Now(),
+				// Заголовки несут traceparent: воркер продолжит тот же трейс.
+				Headers: injectTraceContext(ctx),
+				Body:    body,
+			})
+	})
 }
 
 // RetryPublish отправляет тело события в retry-обменник. Сообщение попадёт
@@ -176,19 +248,21 @@ func (p *RabbitPublisher) RetryPublish(ctx context.Context, routingKey string, b
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.ch.PublishWithContext(ctx,
-		RetryExchange,
-		routingKey,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent,
-			MessageId:    messageID,
-			Expiration:   fmt.Sprintf("%d", delay.Milliseconds()),
-			Headers:      headers,
-			Body:         body,
-		})
+	return p.withChannelLocked(func(ch *amqp.Channel) error {
+		return ch.PublishWithContext(ctx,
+			RetryExchange,
+			routingKey,
+			false,
+			false,
+			amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				MessageId:    messageID,
+				Expiration:   fmt.Sprintf("%d", delay.Milliseconds()),
+				Headers:      headers,
+				Body:         body,
+			})
+	})
 }
 
 // RetryDelay возвращает задержку для попытки retryCount (0 — первая повторная)

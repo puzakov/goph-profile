@@ -1,0 +1,62 @@
+# Разовая задача: применить миграции схемы до старта подов.
+#
+# Запуск: kubectl apply -f k8s/ (в Helm-чарте то же самое выполняется
+# хуком post-install/pre-upgrade — см. templates/job-migrate.yaml;
+# хук именно post-install: на первой установке PostgreSQL создаётся
+# тем же чартом и раньше хука существовать не может).
+#
+# Повторный `kubectl apply` на существующий Job вернёт ошибку: спецификация
+# Job'а неизменяема. Перед повторным запуском удалите его:
+#   kubectl -n goph-profile delete job goph-profile-migrate
+# Отдельный Job нужен только для обновления схемы «руками»: обычные
+# перезапуски подов обходятся без него — сервер и воркер применяют
+# миграции при старте.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: goph-profile-migrate
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: goph-profile-migrate
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  # Повторы Kubernetes дополняют ожидание БД внутри бинарника migrate.
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goph-profile-migrate
+        app.kubernetes.io/part-of: goph-profile
+    spec:
+      restartPolicy: Never
+      serviceAccountName: goph-profile
+      # Уровень пода: пользователь и профиль seccomp.
+      # allowPrivilegeEscalation и capabilities сюда ставить нельзя — они
+      # объявлены только у контейнера, и API-сервер отвергнет манифест.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: goph-profile:latest
+          imagePullPolicy: IfNotPresent
+          command: ["migrate"]
+          # Уровень контейнера: запрет эскалации привилегий, сброс
+          # capabilities и корневая ФС только для чтения.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          # Шагу миграций нужен только DSN: остальные обязательные
+          # переменные сервиса (S3, RabbitMQ) не читаются.
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: DATABASE_URL }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }

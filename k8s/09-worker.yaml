@@ -1,0 +1,105 @@
+# Воркер: асинхронная обработка изображений — миниатюры, ретраи, удаление
+# файлов. Трафик к нему не маршрутизируется, поэтому readiness-пробы нет:
+# под готов сразу, а его реальная «готовность» — это чтение очередей,
+# которое видно по метрикам и по статусам аватарок.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goph-profile-worker
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: goph-profile-worker
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  # Одна реплика на старте, дальше — HPA по CPU (11-hpa.yaml).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goph-profile-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goph-profile-worker
+        app.kubernetes.io/part-of: goph-profile
+    spec:
+      serviceAccountName: goph-profile
+      # Хватает на дочитывание текущего сообщения: воркер берёт по одному
+      # (Qos=1) и на отмену контекста прекращает выборку.
+      terminationGracePeriodSeconds: 30
+      # Уровень пода: пользователь и профиль seccomp.
+      # allowPrivilegeEscalation и capabilities сюда ставить нельзя — они
+      # объявлены только у контейнера, и API-сервер отвергнет манифест.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: goph-profile:latest
+          imagePullPolicy: IfNotPresent
+          # Тот же образ, что у сервера: точка входа выбирается командой.
+          command: ["worker"]
+          ports:
+            - name: metrics
+              containerPort: 9091
+          envFrom:
+            - configMapRef:
+                name: goph-profile-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: DATABASE_URL }
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: RABBITMQ_URL }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: S3_ACCESS_KEY }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: goph-profile-secret, key: S3_SECRET_KEY }
+          # Уровень контейнера: запрет эскалации привилегий, сброс
+          # capabilities и корневая ФС только для чтения.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Проба живости по порту метрик: он открывается только после
+          # успешного подключения к БД, очереди и хранилищу — закрытый
+          # порт означает, что консьюмеры не работают.
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          # Разбор изображений держит память до конца обработки файла,
+          # поэтому лимит выше серверного.
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goph-profile-worker
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/name: goph-profile-worker
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  selector:
+    app.kubernetes.io/name: goph-profile-worker
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: metrics

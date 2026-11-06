@@ -1,0 +1,75 @@
+# Горизонтальное автомасштабирование.
+#
+# Требуется metrics-server (в minikube — `minikube addons enable metrics-server`):
+# без него HPA не получает метрик и в колонке TARGETS будет <unknown>.
+---
+# Сервер: масштабируется по CPU и памяти.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: goph-profile-server
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: goph-profile-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Метрика памяти шумная: сборщик мусора Go возвращает память рывками,
+    # а разбор изображений держит буферы до конца запроса. Порог 80%
+    # сглаживает колебания, но на реальной нагрузке таргет по памяти
+    # стоит заменять на RPS или длину очереди.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      # Пять минут стабилизации: без окна поды уходят и возвращаются
+      # на каждом всплеске, а загрузка аватарки — редкое тяжёлое событие.
+      stabilizationWindowSeconds: 300
+---
+# Воркер: только CPU.
+#
+# Qos=1 на канале — под обрабатывает одно сообщение за раз, а ресайз и
+# JPEG-кодирование упираются в процессор, поэтому CPU прямо связан со
+# скоростью разбора очереди. Память же определяется размером одного файла,
+# а не глубиной очереди, — таргет по ней не отражал бы нагрузку.
+# Дополнительные консьюмеры на тех же очередях безопасны: это конкурирующие
+# потребители, а обработка идемпотентна по message_id.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: goph-profile-worker
+  namespace: goph-profile
+  labels:
+    app.kubernetes.io/part-of: goph-profile
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: goph-profile-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

@@ -1,0 +1,108 @@
+{{- if .Values.postgres.enabled }}
+{{- $name := include "goph-profile.componentName" (dict "root" . "component" "postgres") }}
+# PostgreSQL — метаданные аватарок, статусы обработки, дедупликация событий.
+#
+# Deployment, а не StatefulSet: инстанс один, кластеризации и устойчивых
+# сетевых имён не требуется, а том ReadWriteOnce переиспользуется стратегией
+# Recreate. Выключить компонент можно значением postgres.enabled=false,
+# если стенд подключается к внешней БД (задайте secrets.databaseUrl).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goph-profile.componentLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      # UID/GID образа postgres:16-alpine. fsGroup обязателен: без него
+      # initdb не получит прав на запись в смонтированный том.
+      #
+      # Набор полей рассчитан на уровень restricted политики Pod Security
+      # Admission, которой помечен namespace: seccomp, запрет эскалации
+      # привилегий и сброс capabilities задаются так же, как у приложения.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image | quote }}
+          imagePullPolicy: {{ .Values.postgres.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "goph-profile.fullname" . }}-secret
+                  key: POSTGRES_DB
+            # Данные — в подкаталоге тома: корень смонтированного тома
+            # может содержать служебные файлы, а initdb требует пустой каталог.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # Уровень контейнера: PostgreSQL слушает непривилегированный порт
+          # 5432, поэтому сброс всех capabilities ему не мешает.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.secrets.postgresUser | quote }}, "-d", {{ .Values.secrets.postgresDb | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.secrets.postgresUser | quote }}, "-d", {{ .Values.secrets.postgresDb | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "goph-profile.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  selector:
+    {{- include "goph-profile.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- end }}
